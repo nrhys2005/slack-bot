@@ -1,0 +1,28 @@
+# 프로젝트별 설정
+# name: Slack에서 입력할 프로젝트명
+# path: 프로젝트 루트 경로 (claude CLI 실행 위치)
+# commands: 허용할 명령어 목록
+
+projects:
+  moment-some:
+    path: /Users/rsquare/sanghun/moment-some
+    commands:
+      - harness
+      - plan
+      - develop
+      - review
+  moment-some-app:
+    path: /Users/rsquare/sanghun/moment-some-app
+    commands:
+      - harness
+      - plan
+      - develop
+      - review
+  ra-backend:
+    path: /Users/rsquare/git/ra_backend/app
+    commands:
+      - lgbm
+      - lgbm-test
+      - lgbm-publish
+      - lgbm-notify
+      - lgbm-jira
