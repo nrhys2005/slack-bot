@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(uv sync:*)",
+      "Bash(uv run:*)",
+      "Bash(git:*)",
+      "Bash(claude -p \"안녕\" --output-format text)",
+      "Bash(claude:*)",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\(list\\(d.keys\\(\\)\\)\\)\")",
+      "Bash(env)",
+      "Bash(ls ~/.claude/auth*)",
+      "Bash(ls ~/.claude/*.json)"
+    ]
+  }
+}

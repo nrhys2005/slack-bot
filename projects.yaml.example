@@ -1,0 +1,13 @@
+# 프로젝트별 설정
+# name: Slack에서 입력할 프로젝트명
+# path: 프로젝트 루트 경로 (claude CLI 실행 위치)
+# commands: 허용할 명령어 목록
+
+projects:
+  my-project:
+    path: /path/to/my-project
+    commands:
+      - harness
+      - plan
+      - develop
+      - review
