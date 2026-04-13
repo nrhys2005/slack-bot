@@ -22,16 +22,26 @@ class RunResult:
 
 async def run_claude(project: ProjectConfig, command: str, args: str, task: TaskInfo) -> RunResult:
     """프로젝트 디렉토리에서 claude -p 를 비동기로 실행한다. stdout을 라인별로 누적한다."""
+    # args에서 --auto 플래그 분리
+    auto = False
+    if args:
+        arg_parts = args.split()
+        if "--auto" in arg_parts:
+            auto = True
+            arg_parts.remove("--auto")
+        args = " ".join(arg_parts)
+
     prompt = f"/{command} {args}" if args else f"/{command}"
 
     # ANTHROPIC_API_KEY를 제거하여 Claude Code OAuth 인증 사용
     env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
+    cmd = ["claude", "-p", prompt, "--output-format", "text"]
+    if auto:
+        cmd.append("--allowedTools")
+        cmd.append("Edit,Write,Bash,Glob,Grep,Read,Agent,mcp__*")
+
     proc = await asyncio.create_subprocess_exec(
-        "claude",
-        "-p",
-        prompt,
-        "--output-format",
-        "text",
+        *cmd,
         cwd=project.path,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,

@@ -6,11 +6,13 @@ Slack에서 프로젝트별 Claude Code 하네스 명령어를 실행하는 봇.
 
 ```
 slack_bot/
-├── main.py        # 엔트리포인트 (Slack Bolt + Socket Mode)
-├── config.py      # projects.yaml 로드
-├── runner.py      # claude -p 비동기 실행
-└── handlers.py    # 슬래시 커맨드 핸들러
-projects.yaml      # 프로젝트 매핑 설정
+├── main.py            # 엔트리포인트 (Slack Bolt + Socket Mode)
+├── config.py          # projects.yaml 로드
+├── runner.py          # claude -p 비동기 실행 (--auto 지원)
+├── handlers.py        # 슬래시 커맨드 & @멘션 핸들러
+├── chat.py            # @멘션 질문 → Claude CLI로 답변 생성
+└── task_manager.py    # 실행 중 태스크 추적 및 출력 누적
+projects.yaml              # 프로젝트 매핑 설정 (gitignore, example 참고)
 ```
 
 ## 설치
@@ -18,7 +20,9 @@ projects.yaml      # 프로젝트 매핑 설정
 ```bash
 uv sync
 cp .env.example .env
+cp projects.yaml.example projects.yaml
 # .env에 Slack 토큰 입력
+# projects.yaml에 프로젝트 경로 및 명령어 설정
 ```
 
 ## Slack App 설정
@@ -28,30 +32,29 @@ cp .env.example .env
 3. **Slash Commands** 추가:
    - `/claude` — 하네스 명령어 실행
    - `/claude-projects` — 등록된 프로젝트 목록
-4. **OAuth & Permissions** → Bot Token Scopes:
+   - `/claude-stop` — 실행 중인 태스크 중단
+4. **Event Subscriptions** → Subscribe to bot events:
+   - `app_mention`
+5. **OAuth & Permissions** → Bot Token Scopes:
    - `commands`
    - `chat:write`
-5. 워크스페이스에 앱 설치 → Bot Token (`xoxb-...`)
-6. `.env`에 토큰 입력
+   - `app_mentions:read`
+6. 워크스페이스에 앱 설치 → Bot Token (`xoxb-...`)
+7. `.env`에 토큰 입력
 
 ## 프로젝트 추가
 
-`projects.yaml`에 프로젝트를 추가한다:
+`projects.yaml`에 프로젝트를 추가한다 (`projects.yaml.example` 참고):
 
 ```yaml
 projects:
-  moment-some:
-    path: /Users/rsquare/sanghun/moment-some-app
+  my-project:
+    path: /path/to/my-project
     commands:
       - harness
       - plan
       - develop
       - review
-  new-project:
-    path: /path/to/project
-    commands:
-      - harness
-      - plan
 ```
 
 ## 실행
@@ -63,16 +66,19 @@ uv run slack-bot
 ## 사용법
 
 ```
+# 명령어 실행
 /claude <project> <command> [args]
-
-# 예시
-/claude moment-some harness MOM-43
-/claude moment-some plan MOM-43
-/claude moment-some develop MOM-43
-/claude moment-some harness MOM-44,MOM-45 --auto
+/claude <project> <command> [args] --auto   # 도구 자동 승인
 
 # 프로젝트 목록 조회
 /claude-projects
+
+# 태스크 중단
+/claude-stop          # 실행 중 목록 표시
+/claude-stop <ID>     # 특정 태스크 중단
+
+# 진행상황 질문 (@멘션)
+@bot 지금 어디까지 됐어?
 ```
 
 ## 요구사항
