@@ -19,15 +19,15 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
     wiki_project = projects.get("wiki")
     wiki_path = wiki_project.path if wiki_project else None
 
-    @app.command("/claude")
-    async def handle_claude_command(ack, command, respond):
+    @app.command("/dev")
+    async def handle_dev_command(ack, command, respond):
         """
-        /claude <project> <command> [args]
+        /dev <project> <command> [args]
 
         예시:
-          /claude moment-some harness MOM-43
-          /claude moment-some plan MOM-43
-          /claude moment-some develop MOM-43 --auto
+          /dev moment-some harness MOM-43
+          /dev moment-some plan MOM-43
+          /dev moment-some develop MOM-43 --auto
         """
         await ack()
 
@@ -38,7 +38,7 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
         if len(parts) < 2:
             project_list = ", ".join(f"`{p}`" for p in projects)
             await respond(
-                f"사용법: `/claude <project> <command> [args]`\n"
+                f"사용법: `/dev <project> <command> [args]`\n"
                 f"등록된 프로젝트: {project_list}"
             )
             return
@@ -78,9 +78,9 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
             _run_and_report(app, task_manager, project, task, prompt_display)
         )
 
-    @app.command("/claude-projects")
+    @app.command("/projects")
     async def handle_projects_command(ack, respond):
-        """/claude-projects — 등록된 프로젝트 목록 조회"""
+        """/projects — 등록된 프로젝트 목록 조회"""
         await ack()
         lines = []
         for name, cfg in projects.items():
@@ -90,9 +90,9 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
             lines.append(f"*{name}*: {cmds}")
         await respond("등록된 프로젝트:\n" + "\n".join(lines))
 
-    @app.command("/claude-stop")
+    @app.command("/stop")
     async def handle_stop_command(ack, command, respond):
-        """/claude-stop <task_id> — 실행 중인 태스크 중단"""
+        """/stop <task_id> — 실행 중인 태스크 중단"""
         await ack()
         task_id = (command.get("text") or "").strip()
 
@@ -107,7 +107,7 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
                     f"*{t.task_id}* | {t.project_name} `/{t.command} {t.args}` | {t.elapsed_display} 경과"
                 )
             await respond(
-                "중단할 태스크 ID를 입력해주세요: `/claude-stop <ID>`\n\n"
+                "중단할 태스크 ID를 입력해주세요: `/stop <ID>`\n\n"
                 "실행 중인 태스크:\n" + "\n".join(lines)
             )
             return

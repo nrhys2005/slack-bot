@@ -17,7 +17,7 @@ slack_bot/
 ├── main.py            # 엔트리포인트. AsyncApp, TaskManager 생성, Socket Mode 시작
 ├── config.py          # ProjectConfig 데이터클래스, projects.yaml 로드
 ├── runner.py          # run_claude() — claude -p 비동기 서브프로세스 실행 (스트리밍)
-├── handlers.py        # /claude, /claude-projects, /claude-stop, @멘션 핸들러
+├── handlers.py        # /dev, /projects, /stop, @멘션 핸들러
 ├── chat.py            # Claude CLI로 태스크 출력 분석 및 질문 답변
 └── task_manager.py    # TaskInfo/TaskManager — 실행 중 태스크 추적, 출력 누적
 projects.yaml          # 프로젝트 → 경로/허용 명령어 매핑
@@ -30,7 +30,7 @@ pyproject.toml         # 의존성 및 스크립트 정의
 ### 명령어 실행
 
 ```
-/claude <project> <command> [args]
+/dev <project> <command> [args]
   → handlers.py: 입력 파싱 & 검증 (프로젝트 존재, 명령어 허용 여부)
   → TaskManager.create_task() — 태스크 ID 부여, 추적 시작
   → ack() 즉시 응답 (태스크 ID 포함)
@@ -56,7 +56,7 @@ pyproject.toml         # 의존성 및 스크립트 정의
 ### 태스크 중단
 
 ```
-/claude-stop <task_id>
+/stop <task_id>
   → TaskManager.stop_task() — process.terminate() 호출
 ```
 
@@ -94,9 +94,9 @@ pyproject.toml         # 의존성 및 스크립트 정의
 
 ### handlers.py
 - `register_handlers(app, task_manager)`: 앱 시작 시 `load_projects()` 1회 호출
-- `/claude`: 입력 파싱 → 검증 → TaskManager에 등록 → 백그라운드 실행
-- `/claude-projects`: 등록된 프로젝트 및 허용 명령어 목록 반환
-- `/claude-stop`: 태스크 ID로 프로세스 중단, ID 없으면 실행 중 태스크 목록 표시
+- `/dev`: 입력 파싱 → 검증 → TaskManager에 등록 → 백그라운드 실행
+- `/projects`: 등록된 프로젝트 및 허용 명령어 목록 반환
+- `/stop`: 태스크 ID로 프로세스 중단, ID 없으면 실행 중 태스크 목록 표시
 - `app_mention`: @멘션 텍스트에서 질문 추출 → 스레드 대화 이력 조회 → `chat.answer_question()` 호출 → 스레드 답변
 - `_run_and_report()`: 실행 결과를 Block Kit으로 포맷하여 채널에 전송
 
@@ -117,6 +117,6 @@ pyproject.toml         # 의존성 및 스크립트 정의
 ## Slack App 필요 설정
 
 - **Socket Mode** 활성화
-- **Slash Commands**: `/claude`, `/claude-projects`, `/claude-stop`
+- **Slash Commands**: `/dev`, `/projects`, `/stop`
 - **Event Subscriptions** → Subscribe to bot events: `app_mention`
 - **Bot Token Scopes**: `commands`, `chat:write`, `app_mentions:read`, `channels:history` (스레드 대화 이력 조회용)
