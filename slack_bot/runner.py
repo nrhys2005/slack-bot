@@ -22,14 +22,16 @@ class RunResult:
 
 async def run_claude(project: ProjectConfig, command: str, args: str, task: TaskInfo) -> RunResult:
     """프로젝트 디렉토리에서 claude -p 를 비동기로 실행한다. stdout을 라인별로 누적한다."""
-    # args에서 --auto 플래그 제거 (항상 자동 적용)
+    # 비대화형 환경이므로 --auto 플래그를 항상 포함
     if args:
         arg_parts = args.split()
-        if "--auto" in arg_parts:
-            arg_parts.remove("--auto")
+        if "--auto" not in arg_parts:
+            arg_parts.append("--auto")
         args = " ".join(arg_parts)
+    else:
+        args = "--auto"
 
-    prompt = f"/{command} {args}" if args else f"/{command}"
+    prompt = f"/{command} {args}"
 
     # ANTHROPIC_API_KEY를 제거하여 Claude Code OAuth 인증 사용
     # Slack은 비대화형이므로 항상 --allowedTools 적용
