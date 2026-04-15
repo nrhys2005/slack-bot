@@ -29,7 +29,9 @@ def _build_context(tasks: list[TaskInfo]) -> str:
 SYSTEM_PROMPT = (
     "너는 Slack 봇이다. 사용자의 질문 유형에 따라 적절히 답변해라.\n"
     "1. 실행 중인 태스크에 대한 질문 → 아래 태스크 출력을 분석해서 진행상황, 현재 단계, 멈춘 이유 등을 답변\n"
-    "2. 위키/문서/정보 탐색 질문 → Notion 도구로 검색하여 답변. 출처 페이지 제목을 명시할 것\n"
+    "2. 위키/문서/정보 탐색 질문 → 현재 cwd(로컬 위키 레포)의 마크다운 문서를 Glob/Grep/Read로 먼저 탐색하고, "
+    "로컬에서 찾지 못하거나 최신 정보가 필요하면 Notion MCP(mcp__notion__*)로 보완. "
+    "응답에는 출처(로컬 파일 경로 또는 Notion 페이지 제목)를 명시할 것\n"
     "3. 판단이 어려우면 둘 다 활용\n"
     "Slack 마크다운 형식으로 간결하게 응답해라."
 )
@@ -65,11 +67,13 @@ async def answer_question(
         env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
         cmd = ["claude", "-p", prompt, "--output-format", "text"]
 
-        # 위키 프로젝트가 설정되어 있으면 Notion MCP 도구 허용
+        # 위키 프로젝트가 설정되어 있으면 로컬 파일 탐색 + Notion MCP 허용
         cwd = None
         if wiki_project_path:
             cwd = wiki_project_path
-            cmd.extend(["--allowedTools", "mcp__mcp-server__notion_*"])
+            cmd.extend(
+                ["--allowedTools", "Read,Glob,Grep,mcp__notion*"]
+            )
 
         proc = await asyncio.create_subprocess_exec(
             *cmd,

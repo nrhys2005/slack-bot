@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
     projects = load_projects()
-    wiki_project = projects.get("wiki")
+    wiki_project = next((p for p in projects.values() if p.wiki), None)
     wiki_path = wiki_project.path if wiki_project else None
 
     @app.command("/dev")
@@ -24,9 +24,12 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
         """
         /dev <project> <issue> — harness 단축 명령어
 
+        Slack은 비대화형이라 harness 파이프라인이 승인 프롬프트에서 멈추면
+        안 되고, 서브에이전트/Jira/Git 도구 권한이 필요하다.
+        따라서 항상 `--auto`를 강제한다.
+
         예시:
           /dev moment-some MOM-43
-          /dev moment-some MOM-43 --auto
         """
         await ack()
 
@@ -38,13 +41,16 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
                 f"`{p}`" for p, cfg in projects.items() if "harness" in cfg.commands
             ]
             await respond(
-                f"사용법: `/dev <project> <issue> [--auto]`\n"
+                f"사용법: `/dev <project> <issue>`\n"
                 f"harness 가능한 프로젝트: {', '.join(harness_projects) or '없음'}"
             )
             return
 
         project_name = parts[0]
         args = parts[1]
+
+        if "--auto" not in args.split():
+            args = f"{args} --auto"
 
         # 프로젝트 검증
         project = projects.get(project_name)
