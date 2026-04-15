@@ -27,29 +27,53 @@ def _build_context(tasks: list[TaskInfo]) -> str:
 
 
 SYSTEM_PROMPT = (
-    "너는 Slack 봇이다. "
-    "사용자가 실행 중인 Claude Code 태스크에 대해 질문하면, "
-    "아래 태스크 출력을 분석해서 간결하고 명확하게 답변해라. "
-    "진행상황, 현재 단계, 멈춘 이유 등을 파악해서 알려줘. "
-    "Slack 마크다운 형식으로 응답해라."
+    "너는 Slack 봇이다. 사용자의 질문 유형에 따라 적절히 답변해라.\n"
+    "1. 실행 중인 태스크에 대한 질문 → 아래 태스크 출력을 분석해서 진행상황, 현재 단계, 멈춘 이유 등을 답변\n"
+    "2. 위키/문서/정보 탐색 질문 → Notion 도구로 검색하여 답변. 출처 페이지 제목을 명시할 것\n"
+    "3. 판단이 어려우면 둘 다 활용\n"
+    "Slack 마크다운 형식으로 간결하게 응답해라."
 )
 
 
-async def answer_question(question: str, tasks: list[TaskInfo]) -> str:
-    """실행 중인 태스크 출력을 컨텍스트로 사용해 질문에 답변."""
+async def answer_question(
+    question: str,
+    tasks: list[TaskInfo],
+    thread_history: list[dict] | None = None,
+    wiki_project_path: str | None = None,
+) -> str:
+    """태스크 출력 분석 또는 위키 검색으로 질문에 답변."""
     context = _build_context(tasks)
+
+    history_text = ""
+    if thread_history:
+        lines: list[str] = []
+        for msg in thread_history:
+            role = "봇" if msg.get("bot_id") else "사용자"
+            text = msg.get("text", "")
+            lines.append(f"{role}: {text}")
+        history_text = f"\n\n이전 대화:\n" + "\n".join(lines)
 
     prompt = (
         f"{SYSTEM_PROMPT}\n\n"
-        f"현재 태스크 상태:\n{context}\n\n"
+        f"현재 태스크 상태:\n{context}"
+        f"{history_text}\n\n"
         f"질문: {question}"
     )
 
     try:
         # ANTHROPIC_API_KEY를 제거하여 Claude Code OAuth 인증 사용
         env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
+        cmd = ["claude", "-p", prompt, "--output-format", "text"]
+
+        # 위키 프로젝트가 설정되어 있으면 Notion MCP 도구 허용
+        cwd = None
+        if wiki_project_path:
+            cwd = wiki_project_path
+            cmd.extend(["--allowedTools", "mcp__mcp-server__notion_*"])
+
         proc = await asyncio.create_subprocess_exec(
-            "claude", "-p", prompt, "--output-format", "text",
+            *cmd,
+            cwd=cwd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=env,

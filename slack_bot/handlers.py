@@ -16,16 +16,18 @@ logger = logging.getLogger(__name__)
 
 def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
     projects = load_projects()
+    wiki_project = projects.get("wiki")
+    wiki_path = wiki_project.path if wiki_project else None
 
-    @app.command("/claude")
-    async def handle_claude_command(ack, command, respond):
+    @app.command("/dev")
+    async def handle_dev_command(ack, command, respond):
         """
-        /claude <project> <command> [args]
+        /dev <project> <command> [args]
 
         예시:
-          /claude moment-some harness MOM-43
-          /claude moment-some plan MOM-43
-          /claude moment-some develop MOM-43 --auto
+          /dev moment-some harness MOM-43
+          /dev moment-some plan MOM-43
+          /dev moment-some develop MOM-43 --auto
         """
         await ack()
 
@@ -36,7 +38,7 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
         if len(parts) < 2:
             project_list = ", ".join(f"`{p}`" for p in projects)
             await respond(
-                f"사용법: `/claude <project> <command> [args]`\n"
+                f"사용법: `/dev <project> <command> [args]`\n"
                 f"등록된 프로젝트: {project_list}"
             )
             return
@@ -76,19 +78,21 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
             _run_and_report(app, task_manager, project, task, prompt_display)
         )
 
-    @app.command("/claude-projects")
+    @app.command("/projects")
     async def handle_projects_command(ack, respond):
-        """/claude-projects — 등록된 프로젝트 목록 조회"""
+        """/projects — 등록된 프로젝트 목록 조회"""
         await ack()
         lines = []
         for name, cfg in projects.items():
+            if not cfg.commands:
+                continue
             cmds = ", ".join(f"`{c}`" for c in cfg.commands)
             lines.append(f"*{name}*: {cmds}")
         await respond("등록된 프로젝트:\n" + "\n".join(lines))
 
-    @app.command("/claude-stop")
+    @app.command("/stop")
     async def handle_stop_command(ack, command, respond):
-        """/claude-stop <task_id> — 실행 중인 태스크 중단"""
+        """/stop <task_id> — 실행 중인 태스크 중단"""
         await ack()
         task_id = (command.get("text") or "").strip()
 
@@ -103,7 +107,7 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
                     f"*{t.task_id}* | {t.project_name} `/{t.command} {t.args}` | {t.elapsed_display} 경과"
                 )
             await respond(
-                "중단할 태스크 ID를 입력해주세요: `/claude-stop <ID>`\n\n"
+                "중단할 태스크 ID를 입력해주세요: `/stop <ID>`\n\n"
                 "실행 중인 태스크:\n" + "\n".join(lines)
             )
             return
@@ -114,29 +118,48 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
             await respond(f"태스크 `{task_id}`를 찾을 수 없거나 이미 종료되었습니다.")
 
     @app.event("app_mention")
-    async def handle_mention(event, say):
+    async def handle_mention(event, say, client):
         """@봇 멘션 시 Claude API로 질문에 답변"""
         raw_text = event.get("text", "")
         # @멘션 부분 제거
         question = re.sub(r"<@[A-Z0-9]+>", "", raw_text).strip()
 
+        thread_ts = event.get("thread_ts") or event["ts"]
+
         if not question:
             await say(
-                "무엇이 궁금하신가요? 실행 중인 태스크에 대해 질문해주세요.",
-                thread_ts=event.get("thread_ts") or event["ts"],
+                "무엇이 궁금하신가요? 태스크 진행상황이나 위키 관련 질문을 해주세요.",
+                thread_ts=thread_ts,
             )
             return
 
         channel = event["channel"]
         tasks = task_manager.get_tasks_for_channel(channel)
 
+        # 스레드 대화 이력 조회 (현재 메시지 제외)
+        thread_history: list[dict] = []
+        if event.get("thread_ts"):
+            try:
+                result = await client.conversations_replies(
+                    channel=channel,
+                    ts=event["thread_ts"],
+                    limit=100,
+                )
+                messages = result.get("messages", [])
+                # 현재 메시지 제외, 최근 20개만 유지
+                thread_history = [
+                    m for m in messages if m["ts"] != event["ts"]
+                ][-20:]
+            except Exception:
+                logger.warning("스레드 이력 조회 실패", exc_info=True)
+
         # 태스크 정리
         task_manager.cleanup_old()
 
-        answer = await answer_question(question, tasks)
+        answer = await answer_question(question, tasks, thread_history, wiki_path)
         await say(
             answer,
-            thread_ts=event.get("thread_ts") or event["ts"],
+            thread_ts=thread_ts,
         )
 
 

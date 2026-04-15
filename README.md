@@ -1,6 +1,6 @@
 # slack-bot
 
-Slack에서 프로젝트별 Claude Code 하네스 명령어를 실행하는 봇.
+Slack에서 프로젝트별 Claude Code 하네스 명령어를 실행하고, @멘션으로 진행상황 질문 및 Notion 위키 검색을 할 수 있는 대화형 봇.
 
 ## 구조
 
@@ -30,15 +30,16 @@ cp projects.yaml.example projects.yaml
 1. [api.slack.com/apps](https://api.slack.com/apps)에서 앱 생성
 2. **Socket Mode** 활성화 → App-Level Token 발급 (`xapp-...`)
 3. **Slash Commands** 추가:
-   - `/claude` — 하네스 명령어 실행
-   - `/claude-projects` — 등록된 프로젝트 목록
-   - `/claude-stop` — 실행 중인 태스크 중단
+   - `/dev` — 하네스 명령어 실행
+   - `/projects` — 등록된 프로젝트 목록
+   - `/stop` — 실행 중인 태스크 중단
 4. **Event Subscriptions** → Subscribe to bot events:
    - `app_mention`
 5. **OAuth & Permissions** → Bot Token Scopes:
    - `commands`
    - `chat:write`
    - `app_mentions:read`
+   - `channels:history` (스레드 대화 이력 조회용)
 6. 워크스페이스에 앱 설치 → Bot Token (`xoxb-...`)
 7. `.env`에 토큰 입력
 
@@ -67,18 +68,21 @@ uv run slack-bot
 
 ```
 # 명령어 실행
-/claude <project> <command> [args]
-/claude <project> <command> [args] --auto   # 도구 자동 승인
+/dev <project> <command> [args]
+/dev <project> <command> [args] --auto   # 도구 자동 승인
 
 # 프로젝트 목록 조회
-/claude-projects
+/projects
 
 # 태스크 중단
-/claude-stop          # 실행 중 목록 표시
-/claude-stop <ID>     # 특정 태스크 중단
+/stop              # 실행 중 목록 표시
+/stop <ID>         # 특정 태스크 중단
 
 # 진행상황 질문 (@멘션)
 @bot 지금 어디까지 됐어?
+
+# 위키/문서 검색 (@멘션)
+@bot 온보딩 절차가 어떻게 돼?
 ```
 
 ## 요구사항

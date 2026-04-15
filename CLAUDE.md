@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Slack에서 프로젝트별 Claude Code 하네스 명령어를 실행하고, @멘션으로 진행상황을 질문할 수 있는 대화형 봇.
+Slack에서 프로젝트별 Claude Code 하네스 명령어를 실행하고, @멘션으로 진행상황 질문 및 Notion 위키 검색을 할 수 있는 대화형 봇.
 
 ## 기술 스택
 
@@ -17,7 +17,7 @@ slack_bot/
 ├── main.py            # 엔트리포인트. AsyncApp, TaskManager 생성, Socket Mode 시작
 ├── config.py          # ProjectConfig 데이터클래스, projects.yaml 로드
 ├── runner.py          # run_claude() — claude -p 비동기 서브프로세스 실행 (스트리밍)
-├── handlers.py        # /claude, /claude-projects, /claude-stop, @멘션 핸들러
+├── handlers.py        # /dev, /projects, /stop, @멘션 핸들러
 ├── chat.py            # Claude CLI로 태스크 출력 분석 및 질문 답변
 └── task_manager.py    # TaskInfo/TaskManager — 실행 중 태스크 추적, 출력 누적
 projects.yaml          # 프로젝트 → 경로/허용 명령어 매핑
@@ -30,7 +30,7 @@ pyproject.toml         # 의존성 및 스크립트 정의
 ### 명령어 실행
 
 ```
-/claude <project> <command> [args]
+/dev <project> <command> [args]
   → handlers.py: 입력 파싱 & 검증 (프로젝트 존재, 명령어 허용 여부)
   → TaskManager.create_task() — 태스크 ID 부여, 추적 시작
   → ack() 즉시 응답 (태스크 ID 포함)
@@ -40,20 +40,23 @@ pyproject.toml         # 의존성 및 스크립트 정의
     → 완료 시 결과를 Slack Block Kit 메시지로 채널에 전송
 ```
 
-### @멘션 질문 (진행상황 파악)
+### @멘션 질문 (진행상황 파악 + 위키 검색)
 
 ```
 @bot 지금 어디까지 됐어?
+@bot 온보딩 절차가 어떻게 돼?
   → handlers.py: app_mention 이벤트 수신
+  → 스레드 내 메시지면 conversations.replies로 이전 대화 이력 조회
   → TaskManager.get_tasks_for_channel() — 해당 채널의 태스크 조회
-  → chat.py: 누적 출력을 Claude CLI에 전달, 자연어 답변 생성
-  → 스레드로 답변 전송
+  → chat.py: 태스크 출력 + 대화 이력을 Claude CLI에 전달
+    → Claude가 질문 유형 판단: 태스크 질문이면 출력 분석, 위키 질문이면 Notion MCP 도구로 검색
+  → 스레드로 답변 전송 (이전 대화 컨텍스트 유지)
 ```
 
 ### 태스크 중단
 
 ```
-/claude-stop <task_id>
+/stop <task_id>
   → TaskManager.stop_task() — process.terminate() 호출
 ```
 
@@ -91,16 +94,17 @@ pyproject.toml         # 의존성 및 스크립트 정의
 
 ### handlers.py
 - `register_handlers(app, task_manager)`: 앱 시작 시 `load_projects()` 1회 호출
-- `/claude`: 입력 파싱 → 검증 → TaskManager에 등록 → 백그라운드 실행
-- `/claude-projects`: 등록된 프로젝트 및 허용 명령어 목록 반환
-- `/claude-stop`: 태스크 ID로 프로세스 중단, ID 없으면 실행 중 태스크 목록 표시
-- `app_mention`: @멘션 텍스트에서 질문 추출 → `chat.answer_question()` 호출 → 스레드 답변
+- `/dev`: 입력 파싱 → 검증 → TaskManager에 등록 → 백그라운드 실행
+- `/projects`: 등록된 프로젝트 및 허용 명령어 목록 반환
+- `/stop`: 태스크 ID로 프로세스 중단, ID 없으면 실행 중 태스크 목록 표시
+- `app_mention`: @멘션 텍스트에서 질문 추출 → 스레드 대화 이력 조회 → `chat.answer_question()` 호출 → 스레드 답변
 - `_run_and_report()`: 실행 결과를 Block Kit으로 포맷하여 채널에 전송
 
 ### chat.py
-- `answer_question(question, tasks)`: 태스크 출력 최근 100줄을 컨텍스트로 Claude CLI 호출
+- `answer_question(question, tasks, thread_history, wiki_project_path)`: 태스크 출력 최근 100줄 + 스레드 대화 이력을 컨텍스트로 Claude CLI 호출
+- `wiki_project_path` 설정 시 위키 프로젝트 디렉토리에서 실행, Notion MCP 도구(`--allowedTools`) 허용
+- Claude가 질문 유형에 따라 태스크 분석 또는 Notion 검색을 자동 판단
 - `claude -p` 서브프로세스로 실행 (OAuth 인증 사용)
-- 시스템 프롬프트로 간결한 한국어 답변 유도
 
 ## 개발 참고사항
 
@@ -113,6 +117,6 @@ pyproject.toml         # 의존성 및 스크립트 정의
 ## Slack App 필요 설정
 
 - **Socket Mode** 활성화
-- **Slash Commands**: `/claude`, `/claude-projects`, `/claude-stop`
+- **Slash Commands**: `/dev`, `/projects`, `/stop`
 - **Event Subscriptions** → Subscribe to bot events: `app_mention`
-- **Bot Token Scopes**: `commands`, `chat:write`, `app_mentions:read`
+- **Bot Token Scopes**: `commands`, `chat:write`, `app_mentions:read`, `channels:history` (스레드 대화 이력 조회용)
