@@ -54,11 +54,14 @@ pyproject.toml         # 의존성 및 스크립트 정의
 @bot 지금 어디까지 됐어?
 @bot 온보딩 절차가 어떻게 돼?
   → handlers.py: app_mention 이벤트 수신
-  → 스레드 내 메시지면 conversations.replies로 이전 대화 이력 조회
+  → 👀 리액션 추가 (읽었다는 즉시 피드백)
   → TaskManager.get_tasks_for_channel() — 해당 채널의 태스크 조회
-  → chat.py: 태스크 출력 + 대화 이력을 Claude CLI에 전달
-    → Claude가 질문 유형 판단: 태스크 질문이면 출력 분석, 위키 질문이면 Notion MCP 도구로 검색
-  → 스레드로 답변 전송 (이전 대화 컨텍스트 유지)
+  → 태스크 유무에 따라 분기:
+    - 태스크 있음 → 위키 도구 없이 빠르게 태스크 출력만 분석
+    - 태스크 없음 → Notion MCP 도구 허용하여 위키 검색
+  → 스레드 내 메시지면 conversations.replies로 이전 대화 이력 조회
+  → chat.py: Claude CLI에 전달하여 답변 생성
+  → 👀 리액션 제거, 스레드로 답변 전송
 ```
 
 ### 태스크 중단
@@ -112,7 +115,7 @@ pyproject.toml         # 의존성 및 스크립트 정의
 ### chat.py
 - `answer_question(question, tasks, thread_history, wiki_project_path)`: 태스크 출력 최근 100줄 + 스레드 대화 이력을 컨텍스트로 Claude CLI 호출
 - `wiki_project_path` 설정 시 위키 프로젝트 디렉토리에서 실행, Notion MCP 도구(`--allowedTools`) 허용
-- Claude가 질문 유형에 따라 태스크 분석 또는 Notion 검색을 자동 판단
+- 태스크가 있으면 위키 도구 없이 빠르게 응답, 없으면 Notion MCP 허용
 - `claude -p` 서브프로세스로 실행 (OAuth 인증 사용)
 
 ## 개발 참고사항
@@ -128,4 +131,4 @@ pyproject.toml         # 의존성 및 스크립트 정의
 - **Socket Mode** 활성화
 - **Slash Commands**: `/dev`, `/claude`, `/projects`, `/stop`
 - **Event Subscriptions** → Subscribe to bot events: `app_mention`
-- **Bot Token Scopes**: `commands`, `chat:write`, `app_mentions:read`, `channels:history` (public 채널), `groups:history` (private 채널), `mpim:history` (그룹 DM), `im:history` (1:1 DM) — 스레드 이력 조회용. 스코프 추가 후 앱 재설치 필요.
+- **Bot Token Scopes**: `commands`, `chat:write`, `app_mentions:read`, `channels:history` (public 채널), `groups:history` (private 채널), `mpim:history` (그룹 DM), `im:history` (1:1 DM), `reactions:write` (응답 중 리액션 표시용) — 스코프 추가 후 앱 재설치 필요

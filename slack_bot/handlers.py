@@ -195,6 +195,15 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
             return
 
         channel = event["channel"]
+
+        # 즉시 리액션으로 "읽었다" 신호
+        try:
+            await client.reactions_add(
+                channel=channel, timestamp=event["ts"], name="eyes"
+            )
+        except Exception:
+            pass
+
         tasks = task_manager.get_tasks_for_channel(channel)
 
         # 스레드 대화 이력 조회 (현재 메시지 제외)
@@ -217,7 +226,20 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
         # 태스크 정리
         task_manager.cleanup_old()
 
-        answer = await answer_question(question, tasks, thread_history, wiki_path)
+        # 항상 위키 도구 허용, 태스크 컨텍스트는 있을 때만 포함
+        answer = await answer_question(
+            question, tasks, thread_history,
+            wiki_project_path=wiki_path,
+        )
+
+        # 리액션 제거
+        try:
+            await client.reactions_remove(
+                channel=channel, timestamp=event["ts"], name="eyes"
+            )
+        except Exception:
+            pass
+
         await say(
             answer,
             thread_ts=thread_ts,
