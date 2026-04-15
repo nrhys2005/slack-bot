@@ -59,6 +59,7 @@ pyproject.toml         # 의존성 및 스크립트 정의
   → 스레드 내 메시지면 conversations.replies로 이전 대화 이력 조회
   → chat.py: 항상 위키 도구 허용 + 태스크 컨텍스트(있으면) 포함
     → Claude가 질문/대화 내용을 보고 태스크 분석 or 위키 검색 자동 판단
+    → 위키 검색 시: 로컬 마크다운(Glob/Grep/Read) 우선 → 못 찾으면 Notion MCP 폴백
   → 👀 리액션 제거, 스레드로 답변 전송
 ```
 
@@ -113,7 +114,7 @@ pyproject.toml         # 의존성 및 스크립트 정의
 ### chat.py
 - `answer_question(question, tasks, thread_history, wiki_project_path)`: 태스크 출력 최근 100줄 + 스레드 대화 이력을 컨텍스트로 Claude CLI 호출
 - `wiki_project_path` 설정 시 위키 프로젝트 디렉토리에서 실행, Notion MCP 도구(`--allowedTools`) 허용
-- 항상 위키 도구 허용, 태스크 컨텍스트는 있을 때만 포함 → Claude가 질문 내용으로 자동 판단
+- 항상 위키 도구 허용 (로컬 Glob/Grep/Read 우선, Notion MCP 폴백), 태스크 컨텍스트는 있을 때만 포함
 - `claude -p` 서브프로세스로 실행 (OAuth 인증 사용)
 
 ## 개발 참고사항
