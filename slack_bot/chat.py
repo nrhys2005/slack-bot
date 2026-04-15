@@ -72,7 +72,7 @@ async def answer_question(
         if wiki_project_path:
             cwd = wiki_project_path
             cmd.extend(
-                ["--allowedTools", "Read,Glob,Grep,mcp__notion"]
+                ["--allowedTools", "Read,Glob,Grep,mcp__notion*"]
             )
 
         proc = await asyncio.create_subprocess_exec(
