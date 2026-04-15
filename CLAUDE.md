@@ -30,7 +30,7 @@ pyproject.toml         # 의존성 및 스크립트 정의
 ### harness 단축 실행
 
 ```
-/dev <project> <issue> [--auto]
+/dev <project> <issue>
   → handlers.py: harness 명령어 고정, 프로젝트 검증 (harness 허용 여부)
   → TaskManager.create_task() — 태스크 ID 부여, 추적 시작
   → ack() 즉시 응답 (태스크 ID 포함)
@@ -97,7 +97,7 @@ pyproject.toml         # 의존성 및 스크립트 정의
 - `MAX_OUTPUT_LENGTH = 3900` (Slack 메시지 제한 ~4000자)
 - `run_claude(project, command, args, task) -> RunResult`
 - `claude -p "/<command> <args>" --output-format text` 실행
-- `--auto` 플래그 지원: args에서 분리하여 `--allowedTools`로 변환
+- Slack은 비대화형이므로 `--allowedTools`를 항상 자동 적용 (사용자 `--auto` 플래그 불필요)
 - **stdout 라인별 스트리밍**: `async for line in proc.stdout` → `task.output_lines`에 누적
 - 출력 초과 시 truncate 처리
 - `ANTHROPIC_API_KEY`를 서브프로세스 환경에서 제거하여 Claude Code OAuth 인증 사용
