@@ -128,4 +128,4 @@ pyproject.toml         # 의존성 및 스크립트 정의
 - **Socket Mode** 활성화
 - **Slash Commands**: `/dev`, `/claude`, `/projects`, `/stop`
 - **Event Subscriptions** → Subscribe to bot events: `app_mention`
-- **Bot Token Scopes**: `commands`, `chat:write`, `app_mentions:read`, `channels:history` (스레드 대화 이력 조회용)
+- **Bot Token Scopes**: `commands`, `chat:write`, `app_mentions:read`, `channels:history` (public 채널), `groups:history` (private 채널), `mpim:history` (그룹 DM), `im:history` (1:1 DM) — 스레드 이력 조회용. 스코프 추가 후 앱 재설치 필요.

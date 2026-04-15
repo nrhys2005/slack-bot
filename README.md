@@ -40,7 +40,12 @@ cp projects.yaml.example projects.yaml
    - `commands`
    - `chat:write`
    - `app_mentions:read`
-   - `channels:history` (스레드 대화 이력 조회용)
+   - `channels:history` (public 채널 스레드 이력)
+   - `groups:history` (private 채널 스레드 이력)
+   - `mpim:history` (그룹 DM 스레드 이력)
+   - `im:history` (1:1 DM 스레드 이력)
+
+   > 스코프 추가 후 워크스페이스에 앱을 **재설치**해야 새 권한이 토큰에 반영됩니다.
 6. 워크스페이스에 앱 설치 → Bot Token (`xoxb-...`)
 7. `.env`에 토큰 입력
 

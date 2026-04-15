@@ -12,6 +12,7 @@ class ProjectConfig:
     name: str
     path: str
     commands: list[str] = field(default_factory=list)
+    wiki: bool = False
 
 
 def load_projects(config_path: str | None = None) -> dict[str, ProjectConfig]:
@@ -30,5 +31,6 @@ def load_projects(config_path: str | None = None) -> dict[str, ProjectConfig]:
             name=name,
             path=cfg["path"],
             commands=cfg.get("commands", []),
+            wiki=cfg.get("wiki", False),
         )
     return projects
