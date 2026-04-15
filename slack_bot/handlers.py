@@ -22,12 +22,65 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
     @app.command("/dev")
     async def handle_dev_command(ack, command, respond):
         """
-        /dev <project> <command> [args]
+        /dev <project> <issue> — harness 단축 명령어
 
         예시:
-          /dev moment-some harness MOM-43
-          /dev moment-some plan MOM-43
-          /dev moment-some develop MOM-43 --auto
+          /dev moment-some MOM-43
+          /dev moment-some MOM-43 --auto
+        """
+        await ack()
+
+        text = (command.get("text") or "").strip()
+        parts = text.split(None, 1)
+
+        if len(parts) < 2:
+            harness_projects = [
+                f"`{p}`" for p, cfg in projects.items() if "harness" in cfg.commands
+            ]
+            await respond(
+                f"사용법: `/dev <project> <issue> [--auto]`\n"
+                f"harness 가능한 프로젝트: {', '.join(harness_projects) or '없음'}"
+            )
+            return
+
+        project_name = parts[0]
+        args = parts[1]
+
+        # 프로젝트 검증
+        project = projects.get(project_name)
+        if project is None:
+            project_list = ", ".join(f"`{p}`" for p in projects)
+            await respond(f"알 수 없는 프로젝트: `{project_name}`\n등록된 프로젝트: {project_list}")
+            return
+
+        if "harness" not in project.commands:
+            await respond(f"`{project_name}` 프로젝트에 harness 명령어가 등록되어 있지 않습니다.")
+            return
+
+        # 태스크 생성
+        user = command.get("user_name", "unknown")
+        channel = command["channel_id"]
+        task = task_manager.create_task(project_name, "harness", args, user, channel)
+        prompt_display = f"/harness {args}".strip()
+
+        await respond(
+            f"*{project_name}* 프로젝트에서 `{prompt_display}` 실행 중... (ID: {task.task_id})\n"
+            f"완료되면 이 채널에 결과를 알려드립니다. "
+            f"`@bot 지금 어디까지 됐어?` 로 진행상황을 확인할 수 있습니다."
+        )
+
+        asyncio.create_task(
+            _run_and_report(app, task_manager, project, task, prompt_display)
+        )
+
+    @app.command("/claude")
+    async def handle_claude_command(ack, command, respond):
+        """
+        /claude <project> <command> [args]
+
+        예시:
+          /claude moment-some plan MOM-43
+          /claude moment-some develop MOM-43 --auto
         """
         await ack()
 
@@ -36,9 +89,11 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
 
         # 입력 검증: 프로젝트명 + 명령어 최소 필요
         if len(parts) < 2:
-            project_list = ", ".join(f"`{p}`" for p in projects)
+            project_list = ", ".join(
+                f"`{p}`" for p, cfg in projects.items() if cfg.commands
+            )
             await respond(
-                f"사용법: `/dev <project> <command> [args]`\n"
+                f"사용법: `/claude <project> <command> [args]`\n"
                 f"등록된 프로젝트: {project_list}"
             )
             return

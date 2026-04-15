@@ -30,7 +30,8 @@ cp projects.yaml.example projects.yaml
 1. [api.slack.com/apps](https://api.slack.com/apps)에서 앱 생성
 2. **Socket Mode** 활성화 → App-Level Token 발급 (`xapp-...`)
 3. **Slash Commands** 추가:
-   - `/dev` — 하네스 명령어 실행
+   - `/dev` — harness 단축 실행
+   - `/claude` — 범용 명령어 실행
    - `/projects` — 등록된 프로젝트 목록
    - `/stop` — 실행 중인 태스크 중단
 4. **Event Subscriptions** → Subscribe to bot events:
@@ -67,9 +68,13 @@ uv run slack-bot
 ## 사용법
 
 ```
-# 명령어 실행
-/dev <project> <command> [args]
-/dev <project> <command> [args] --auto   # 도구 자동 승인
+# harness 단축 실행
+/dev <project> <issue>
+/dev <project> <issue> --auto            # 도구 자동 승인
+
+# 범용 명령어 실행
+/claude <project> <command> [args]
+/claude <project> <command> [args] --auto
 
 # 프로젝트 목록 조회
 /projects
