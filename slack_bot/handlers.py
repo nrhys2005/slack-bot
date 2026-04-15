@@ -202,7 +202,7 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
                 channel=channel, timestamp=event["ts"], name="eyes"
             )
         except Exception:
-            pass
+            logger.warning("리액션 추가 실패", exc_info=True)
 
         tasks = task_manager.get_tasks_for_channel(channel)
 
@@ -226,7 +226,7 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
         # 태스크 정리
         task_manager.cleanup_old()
 
-        # 항상 위키 도구 허용, 태스크 컨텍스트는 있을 때만 포함
+        # 항상 위키 도구 허용, 태스크가 있으면 출력도 컨텍스트에 포함
         answer = await answer_question(
             question, tasks, thread_history,
             wiki_project_path=wiki_path,
@@ -238,7 +238,7 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
                 channel=channel, timestamp=event["ts"], name="eyes"
             )
         except Exception:
-            pass
+            logger.warning("리액션 제거 실패", exc_info=True)
 
         await say(
             answer,
