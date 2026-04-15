@@ -17,7 +17,7 @@ slack_bot/
 ├── main.py            # 엔트리포인트. AsyncApp, TaskManager 생성, Socket Mode 시작
 ├── config.py          # ProjectConfig 데이터클래스, projects.yaml 로드
 ├── runner.py          # run_claude() — claude -p 비동기 서브프로세스 실행 (스트리밍)
-├── handlers.py        # /dev, /projects, /stop, @멘션 핸들러
+├── handlers.py        # /dev, /claude, /projects, /stop, @멘션 핸들러
 ├── chat.py            # Claude CLI로 태스크 출력 분석 및 질문 답변
 └── task_manager.py    # TaskInfo/TaskManager — 실행 중 태스크 추적, 출력 누적
 projects.yaml          # 프로젝트 → 경로/허용 명령어 매핑
@@ -27,17 +27,25 @@ pyproject.toml         # 의존성 및 스크립트 정의
 
 ## 아키텍처 흐름
 
-### 명령어 실행
+### harness 단축 실행
 
 ```
-/dev <project> <command> [args]
-  → handlers.py: 입력 파싱 & 검증 (프로젝트 존재, 명령어 허용 여부)
+/dev <project> <issue> [--auto]
+  → handlers.py: harness 명령어 고정, 프로젝트 검증 (harness 허용 여부)
   → TaskManager.create_task() — 태스크 ID 부여, 추적 시작
   → ack() 즉시 응답 (태스크 ID 포함)
   → asyncio.create_task()로 백그라운드 실행
-    → runner.py: asyncio.create_subprocess_exec("claude", "-p", ...)
+    → runner.py: asyncio.create_subprocess_exec("claude", "-p", "/harness <issue>", ...)
     → stdout 라인별 스트리밍 읽기 → TaskInfo.output_lines에 누적
     → 완료 시 결과를 Slack Block Kit 메시지로 채널에 전송
+```
+
+### 범용 명령어 실행
+
+```
+/claude <project> <command> [args]
+  → handlers.py: 입력 파싱 & 검증 (프로젝트 존재, 명령어 허용 여부)
+  → 이하 동일한 태스크 생성 및 백그라운드 실행 흐름
 ```
 
 ### @멘션 질문 (진행상황 파악 + 위키 검색)
@@ -94,7 +102,8 @@ pyproject.toml         # 의존성 및 스크립트 정의
 
 ### handlers.py
 - `register_handlers(app, task_manager)`: 앱 시작 시 `load_projects()` 1회 호출
-- `/dev`: 입력 파싱 → 검증 → TaskManager에 등록 → 백그라운드 실행
+- `/dev`: harness 단축 명령어. 프로젝트 + 이슈명만 받아 harness 실행
+- `/claude`: 범용 명령어. 프로젝트 + 명령어 + args 받아 실행
 - `/projects`: 등록된 프로젝트 및 허용 명령어 목록 반환
 - `/stop`: 태스크 ID로 프로세스 중단, ID 없으면 실행 중 태스크 목록 표시
 - `app_mention`: @멘션 텍스트에서 질문 추출 → 스레드 대화 이력 조회 → `chat.answer_question()` 호출 → 스레드 답변
@@ -117,6 +126,6 @@ pyproject.toml         # 의존성 및 스크립트 정의
 ## Slack App 필요 설정
 
 - **Socket Mode** 활성화
-- **Slash Commands**: `/dev`, `/projects`, `/stop`
+- **Slash Commands**: `/dev`, `/claude`, `/projects`, `/stop`
 - **Event Subscriptions** → Subscribe to bot events: `app_mention`
 - **Bot Token Scopes**: `commands`, `chat:write`, `app_mentions:read`, `channels:history` (스레드 대화 이력 조회용)
