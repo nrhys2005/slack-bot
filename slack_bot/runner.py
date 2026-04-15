@@ -35,6 +35,7 @@ async def run_claude(project: ProjectConfig, command: str, args: str, task: Task
     # Slack은 비대화형이므로 항상 --allowedTools 적용
     env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
     cmd = ["claude", "-p", prompt, "--output-format", "text",
+           "--permission-mode", "bypassPermissions",
            "--allowedTools", "Edit,Write,Bash,Glob,Grep,Read,Agent,mcp__*"]
 
     proc = await asyncio.create_subprocess_exec(
