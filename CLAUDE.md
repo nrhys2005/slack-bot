@@ -56,11 +56,9 @@ pyproject.toml         # 의존성 및 스크립트 정의
   → handlers.py: app_mention 이벤트 수신
   → 👀 리액션 추가 (읽었다는 즉시 피드백)
   → TaskManager.get_tasks_for_channel() — 해당 채널의 태스크 조회
-  → 태스크 유무에 따라 분기:
-    - 태스크 있음 → 위키 도구 없이 빠르게 태스크 출력만 분석
-    - 태스크 없음 → Notion MCP 도구 허용하여 위키 검색
   → 스레드 내 메시지면 conversations.replies로 이전 대화 이력 조회
-  → chat.py: Claude CLI에 전달하여 답변 생성
+  → chat.py: 항상 위키 도구 허용 + 태스크 컨텍스트(있으면) 포함
+    → Claude가 질문/대화 내용을 보고 태스크 분석 or 위키 검색 자동 판단
   → 👀 리액션 제거, 스레드로 답변 전송
 ```
 
@@ -115,7 +113,7 @@ pyproject.toml         # 의존성 및 스크립트 정의
 ### chat.py
 - `answer_question(question, tasks, thread_history, wiki_project_path)`: 태스크 출력 최근 100줄 + 스레드 대화 이력을 컨텍스트로 Claude CLI 호출
 - `wiki_project_path` 설정 시 위키 프로젝트 디렉토리에서 실행, Notion MCP 도구(`--allowedTools`) 허용
-- 태스크가 있으면 위키 도구 없이 빠르게 응답, 없으면 Notion MCP 허용
+- 항상 위키 도구 허용, 태스크 컨텍스트는 있을 때만 포함 → Claude가 질문 내용으로 자동 판단
 - `claude -p` 서브프로세스로 실행 (OAuth 인증 사용)
 
 ## 개발 참고사항
