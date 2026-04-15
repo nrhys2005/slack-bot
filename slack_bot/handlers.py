@@ -143,13 +143,13 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
                 result = await client.conversations_replies(
                     channel=channel,
                     ts=event["thread_ts"],
-                    limit=20,
+                    limit=100,
                 )
                 messages = result.get("messages", [])
-                # 현재 메시지 제외, 최근 대화만 유지
+                # 현재 메시지 제외, 최근 20개만 유지
                 thread_history = [
                     m for m in messages if m["ts"] != event["ts"]
-                ]
+                ][-20:]
             except Exception:
                 logger.warning("스레드 이력 조회 실패", exc_info=True)
 
