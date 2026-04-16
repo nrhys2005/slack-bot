@@ -8,6 +8,7 @@ from slack_bolt.async_app import AsyncApp
 
 from slack_bot.chat import answer_question
 from slack_bot.config import load_projects
+from slack_bot.db_query import run_db_query
 from slack_bot.runner import run_claude
 from slack_bot.task_manager import TaskManager
 
@@ -18,6 +19,8 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
     projects = load_projects()
     wiki_project = next((p for p in projects.values() if p.wiki), None)
     wiki_path = wiki_project.path if wiki_project else None
+    ra_backend_project = projects.get("ra-backend")
+    ra_backend_path = ra_backend_project.path if ra_backend_project else None
 
     @app.command("/dev")
     async def handle_dev_command(ack, command, respond):
@@ -180,6 +183,51 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
         else:
             await respond(f"태스크 `{task_id}`를 찾을 수 없거나 이미 종료되었습니다.")
 
+    @app.command("/db")
+    async def handle_db_command(ack, command, respond):
+        """
+        /db <자연어 질문> — ra_backend 모델을 참고해 ra/core DB를 psql로 조회
+
+        예시:
+          /db 지난주 신규 가입한 유저 수
+          /db ra_v2 스키마 테이블 목록 보여줘
+        """
+        await ack()
+
+        question = (command.get("text") or "").strip()
+
+        if not question:
+            await respond(
+                "사용법: `/db <자연어 질문>`\n"
+                "예시: `/db 지난주 가입한 유저 수`, `/db 최근 등록된 건축인허가 10건`"
+            )
+            return
+
+        if ra_backend_path is None:
+            await respond(
+                "`ra-backend` 프로젝트가 `projects.yaml` 에 등록되어 있지 않습니다. "
+                "DB 모델·자격증명 참조를 위해 등록이 필요합니다."
+            )
+            return
+
+        user = command.get("user_name", "unknown")
+        channel = command["channel_id"]
+        slash_command = f"/db {question}"
+
+        await respond(f":mag: `{question}` 조회 중...")
+
+        asyncio.create_task(
+            _run_db_query_and_report(
+                app,
+                question=question,
+                channel=channel,
+                user=user,
+                ra_backend_path=ra_backend_path,
+                wiki_path=wiki_path,
+                slash_command=slash_command,
+            )
+        )
+
     @app.event("app_mention")
     async def handle_mention(event, say, client):
         """@봇 멘션 시 Claude API로 질문에 답변"""
@@ -297,5 +345,46 @@ async def _run_and_report(
             text=(
                 f":warning: *{task.project_name}* `{prompt_display}` 실행 중 에러가 발생했습니다. "
                 f"로그를 확인해주세요.\n원본 명령어: `{slash_command}`"
+            ),
+        )
+
+
+async def _run_db_query_and_report(
+    app: AsyncApp,
+    question: str,
+    channel: str,
+    user: str,
+    ra_backend_path: str,
+    wiki_path: str | None,
+    slash_command: str,
+) -> None:
+    try:
+        answer = await run_db_query(question, ra_backend_path, wiki_path)
+        blocks = [
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": (
+                        f":mag: *DB 조회 결과* (요청: <@{user}>)\n"
+                        f"원본 명령어: `{slash_command}`"
+                    ),
+                },
+            },
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": answer or "_출력 없음_"},
+            },
+        ]
+        await app.client.chat_postMessage(
+            channel=channel, blocks=blocks, text=f"DB 조회 결과: {question}"
+        )
+    except Exception:
+        logger.exception("DB 조회 중 에러 발생")
+        await app.client.chat_postMessage(
+            channel=channel,
+            text=(
+                f":warning: DB 조회 중 에러가 발생했습니다. 로그를 확인해주세요.\n"
+                f"원본 명령어: `{slash_command}`"
             ),
         )

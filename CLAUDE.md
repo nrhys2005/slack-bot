@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Slack에서 프로젝트별 Claude Code 하네스 명령어를 실행하고, @멘션으로 진행상황 질문 및 Notion 위키 검색을 할 수 있는 대화형 봇.
+Slack에서 프로젝트별 Claude Code 하네스 명령어를 실행하고, @멘션으로 진행상황 질문·Notion 위키 검색, `/db`로 ra_backend 모델 기반 자연어 DB 조회까지 할 수 있는 대화형 봇.
 
 ## 기술 스택
 
@@ -17,8 +17,9 @@ slack_bot/
 ├── main.py            # 엔트리포인트. AsyncApp, TaskManager 생성, Socket Mode 시작
 ├── config.py          # ProjectConfig 데이터클래스, projects.yaml 로드
 ├── runner.py          # run_claude() — claude -p 비동기 서브프로세스 실행 (스트리밍)
-├── handlers.py        # /dev, /claude, /projects, /stop, @멘션 핸들러
+├── handlers.py        # /dev, /claude, /projects, /stop, /db, @멘션 핸들러
 ├── chat.py            # Claude CLI로 태스크 출력 분석 및 질문 답변
+├── db_query.py        # /db — ra_backend 모델 기반 자연어→SQL→psql 실행
 └── task_manager.py    # TaskInfo/TaskManager — 실행 중 태스크 추적, 출력 누적
 projects.yaml          # 프로젝트 → 경로/허용 명령어 매핑
 .env                   # SLACK_BOT_TOKEN, SLACK_APP_TOKEN
@@ -70,6 +71,24 @@ pyproject.toml         # 의존성 및 스크립트 정의
   → TaskManager.stop_task() — process.terminate() 호출
 ```
 
+### 자연어 DB 조회
+
+```
+/db <자연어 질문>
+  → handlers.py: 질문 파싱, ra-backend 프로젝트 등록 여부 확인
+  → ack() 즉시 응답 + `:mag: 조회 중...` 안내
+  → asyncio.create_task()로 백그라운드 실행
+    → db_query.run_db_query(question, ra_backend_path, wiki_path)
+      → ra_backend/app/.env 에서 DB 자격증명 로드
+      → 시스템 프롬프트에 접속 정보 + SELECT-only 규칙 주입
+      → claude -p 서브프로세스 실행 (cwd=ra_backend_path)
+        - Claude가 app/models/{ra,core}/*.py 를 Read/Grep해 스키마 파악
+        - 필요 시 위키 디렉토리에서 도메인 용어 탐색
+        - BEGIN; SET TRANSACTION READ ONLY; <SELECT>; ROLLBACK; 로 래핑해 psql 실행
+      → stdout을 MAX_OUTPUT_LENGTH 로 truncate
+    → 결과를 Block Kit 메시지로 채널에 전송
+```
+
 ## 주요 모듈 상세
 
 ### main.py
@@ -117,6 +136,14 @@ pyproject.toml         # 의존성 및 스크립트 정의
 - 항상 위키 도구 허용 (로컬 Glob/Grep/Read 우선, Notion MCP 폴백), 태스크 컨텍스트는 있을 때만 포함
 - `claude -p` 서브프로세스로 실행 (OAuth 인증 사용)
 
+### db_query.py
+- `run_db_query(question, ra_backend_path, wiki_path)`: 자연어 질문을 받아 Claude CLI로 SQL 생성·실행
+- `_load_db_env(ra_backend_path)`: `{ra_backend_path}/app/.env` 에서 `POSTGRESQL_RA_*`/`POSTGRESQL_CORE_*` 키만 추출, 누락 시 `DBEnvError`
+- `_build_system_prompt(db_env, wiki_path)`: ra/core 접속 정보·스키마·SELECT-only 규칙·psql 사용 예시를 포함한 시스템 프롬프트 생성
+- 서브프로세스 환경에 `PGPASSWORD_RA`, `PGPASSWORD_CORE` 를 주입해 Claude가 psql 실행 시 참조
+- `--allowedTools "Read,Glob,Grep,Bash(psql:*)"` 로 도구 범위를 DB 조회 용도로 한정
+- 안전장치: SELECT만 허용 + `BEGIN; SET TRANSACTION READ ONLY; ... ROLLBACK;` 이중 방어
+
 ## 개발 참고사항
 
 - 전체 비동기 구조: `AsyncApp`, `asyncio.create_task()`, `asyncio.create_subprocess_exec()`
@@ -128,6 +155,6 @@ pyproject.toml         # 의존성 및 스크립트 정의
 ## Slack App 필요 설정
 
 - **Socket Mode** 활성화
-- **Slash Commands**: `/dev`, `/claude`, `/projects`, `/stop`
+- **Slash Commands**: `/dev`, `/claude`, `/projects`, `/stop`, `/db`
 - **Event Subscriptions** → Subscribe to bot events: `app_mention`
 - **Bot Token Scopes**: `commands`, `chat:write`, `app_mentions:read`, `channels:history` (public 채널), `groups:history` (private 채널), `mpim:history` (그룹 DM), `im:history` (1:1 DM), `reactions:write` (응답 중 리액션 표시용) — 스코프 추가 후 앱 재설치 필요

@@ -1,6 +1,6 @@
 # slack-bot
 
-Slack에서 프로젝트별 Claude Code 하네스 명령어를 실행하고, @멘션으로 진행상황 질문 및 Notion 위키 검색을 할 수 있는 대화형 봇.
+Slack에서 프로젝트별 Claude Code 하네스 명령어를 실행하고, @멘션으로 진행상황 질문·Notion 위키 검색, `/db`로 ra_backend 모델 기반 자연어 DB 조회까지 할 수 있는 대화형 봇.
 
 ## 구조
 
@@ -11,6 +11,7 @@ slack_bot/
 ├── runner.py          # claude -p 비동기 실행 (--allowedTools 자동 적용)
 ├── handlers.py        # 슬래시 커맨드 & @멘션 핸들러
 ├── chat.py            # @멘션 질문 → Claude CLI로 답변 생성
+├── db_query.py        # /db — ra_backend 모델 기반 자연어→SQL→psql 실행
 └── task_manager.py    # 실행 중 태스크 추적 및 출력 누적
 projects.yaml              # 프로젝트 매핑 설정 (gitignore, example 참고)
 ```
@@ -34,6 +35,7 @@ cp projects.yaml.example projects.yaml
    - `/claude` — 범용 명령어 실행
    - `/projects` — 등록된 프로젝트 목록
    - `/stop` — 실행 중인 태스크 중단
+   - `/db` — ra_backend 모델 기반 자연어 DB 조회 (읽기 전용)
 4. **Event Subscriptions** → Subscribe to bot events:
    - `app_mention`
 5. **OAuth & Permissions** → Bot Token Scopes:
@@ -87,6 +89,10 @@ uv run slack-bot
 /stop              # 실행 중 목록 표시
 /stop <ID>         # 특정 태스크 중단
 
+# 자연어 DB 조회 (ra_backend 모델 기반, 읽기 전용 SELECT)
+/db 지난주 신규 가입한 유저 수
+/db 최근 등록된 건축인허가 10건
+
 # 진행상황 질문 (@멘션)
 @bot 지금 어디까지 됐어?
 
@@ -98,5 +104,6 @@ uv run slack-bot
 
 - Python 3.11+
 - `claude` CLI가 PATH에 설치되어 있어야 함
+- `/db` 사용 시 `psql` CLI가 PATH에 있고, `ra-backend` 프로젝트가 `projects.yaml` 에 등록되어 있어야 함 (자격증명은 `<ra-backend>/app/.env` 에서 로드)
 - 각 프로젝트에 `.claude/` 하네스가 설정되어 있어야 함
 - 프로젝트의 `.claude/settings.local.json`에 필요한 도구 권한이 허용되어 있어야 함
