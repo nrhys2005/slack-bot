@@ -87,19 +87,23 @@ def _build_system_prompt(db_env: dict[str, str], wiki_path: str | None) -> str:
    ```
    BEGIN; SET TRANSACTION READ ONLY; <SELECT ...>; ROLLBACK;
    ```
-3. 결과 행이 많을 수 있는 쿼리는 기본으로 `LIMIT 100` 을 붙인다 (사용자가 명시적으로 전체 집계를 요청한 경우 예외).
+3. **모든 SELECT 쿼리에 `LIMIT 100` 을 반드시 적용한다. 예외 없음.**
+   - 집계만 수행하는 쿼리(COUNT/SUM/AVG/MIN/MAX 등 단일 행 결과)에도 `LIMIT 100` 을 붙인다 — 결과는 어차피 1행이므로 무해하고, 실수로 GROUP BY가 섞여도 방어가 된다.
+   - 사용자가 "전부 보여줘", "모든 데이터" 같이 요청해도 거부하지 말고 상위 100개만 반환하며, 답변에 "결과는 최대 100행으로 제한됨" 을 명시한다.
+   - 서브쿼리 안쪽이 아니라 **최종 결과를 반환하는 가장 바깥 SELECT** 에 `LIMIT 100` 을 적용한다.
 4. psql 호출 예시:
    ```bash
    PGPASSWORD="$PGPASSWORD_RA" psql -h {ra_host} -p {ra_port} -U {ra_user} -d {ra_db} \\
-     -v ON_ERROR_STOP=1 -c "BEGIN; SET TRANSACTION READ ONLY; SELECT ...; ROLLBACK;"
+     -v ON_ERROR_STOP=1 -c "BEGIN; SET TRANSACTION READ ONLY; SELECT ... LIMIT 100; ROLLBACK;"
    ```
    core DB도 동일한 형태, 다만 `PGPASSWORD_CORE`, 각 core 접속 정보 사용.
 5. 쿼리 실패 시 에러 메시지와 원인을 그대로 전달하고, 재시도 전에 모델/스키마를 다시 확인한다.
 
 ## 답변 형식 (Slack 마크다운)
 - 먼저 1-2 문장으로 어떤 DB/테이블을 조회하는지 설명
-- 실행한 SQL을 ```sql 블록으로 표시
+- 실행한 SQL을 ```sql 블록으로 표시 (LIMIT 100 포함)
 - 결과가 소수 행이면 표/리스트로, 많으면 상위 몇 건 + 요약 통계로 정리
+- 반환 행이 100행이면 "최대 100행으로 제한됨 — 더 필요하면 필터 조건을 좁혀 다시 질문해주세요" 문구를 꼭 덧붙인다
 - 결과가 없으면 그렇게 말할 것
 - 실행 실패 또는 SELECT 외 요청 거부 시 이유를 명확히 설명
 """

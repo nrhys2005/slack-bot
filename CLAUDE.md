@@ -142,7 +142,7 @@ pyproject.toml         # 의존성 및 스크립트 정의
 - `_build_system_prompt(db_env, wiki_path)`: ra/core 접속 정보·스키마·SELECT-only 규칙·psql 사용 예시를 포함한 시스템 프롬프트 생성
 - 서브프로세스 환경에 `PGPASSWORD_RA`, `PGPASSWORD_CORE` 를 주입해 Claude가 psql 실행 시 참조
 - `--allowedTools "Read,Glob,Grep,Bash(psql:*)"` 로 도구 범위를 DB 조회 용도로 한정
-- 안전장치: SELECT만 허용 + `BEGIN; SET TRANSACTION READ ONLY; ... ROLLBACK;` 이중 방어
+- 안전장치: SELECT만 허용 + `BEGIN; SET TRANSACTION READ ONLY; ... ROLLBACK;` 이중 방어 + 모든 SELECT에 `LIMIT 100` 강제 (결과량 제한)
 
 ## 개발 참고사항
 

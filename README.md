@@ -35,7 +35,7 @@ cp projects.yaml.example projects.yaml
    - `/claude` — 범용 명령어 실행
    - `/projects` — 등록된 프로젝트 목록
    - `/stop` — 실행 중인 태스크 중단
-   - `/db` — ra_backend 모델 기반 자연어 DB 조회 (읽기 전용)
+   - `/db` — ra_backend 모델 기반 자연어 DB 조회 (읽기 전용, 결과 최대 100행)
 4. **Event Subscriptions** → Subscribe to bot events:
    - `app_mention`
 5. **OAuth & Permissions** → Bot Token Scopes:
@@ -89,7 +89,7 @@ uv run slack-bot
 /stop              # 실행 중 목록 표시
 /stop <ID>         # 특정 태스크 중단
 
-# 자연어 DB 조회 (ra_backend 모델 기반, 읽기 전용 SELECT)
+# 자연어 DB 조회 (ra_backend 모델 기반, 읽기 전용 SELECT, 결과 최대 100행)
 /db 지난주 신규 가입한 유저 수
 /db 최근 등록된 건축인허가 10건
 
