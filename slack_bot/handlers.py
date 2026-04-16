@@ -19,8 +19,8 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
     projects = load_projects()
     wiki_project = next((p for p in projects.values() if p.wiki), None)
     wiki_path = wiki_project.path if wiki_project else None
-    ra_backend_project = projects.get("ra-backend")
-    ra_backend_path = ra_backend_project.path if ra_backend_project else None
+    db_backend_project = next((p for p in projects.values() if p.db_backend), None)
+    db_backend_path = db_backend_project.path if db_backend_project else None
 
     @app.command("/dev")
     async def handle_dev_command(ack, command, respond):
@@ -186,7 +186,7 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
     @app.command("/db")
     async def handle_db_command(ack, command, respond):
         """
-        /db <자연어 질문> — ra_backend 모델을 참고해 ra/core DB를 psql로 조회
+        /db <자연어 질문> — db_backend 프로젝트(ra_backend) 모델을 참고해 DB를 psql로 조회
 
         예시:
           /db 지난주 신규 가입한 유저 수
@@ -203,10 +203,11 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
             )
             return
 
-        if ra_backend_path is None:
+        if db_backend_path is None:
             await respond(
-                "`ra-backend` 프로젝트가 `projects.yaml` 에 등록되어 있지 않습니다. "
-                "DB 모델·자격증명 참조를 위해 등록이 필요합니다."
+                "`projects.yaml` 에 `db_backend: true` 로 표시된 프로젝트가 없습니다. "
+                "DB 모델·자격증명 참조를 위해 ra_backend 같은 FastAPI 프로젝트를 "
+                "`db_backend: true` 옵션과 함께 등록해주세요."
             )
             return
 
@@ -222,7 +223,7 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
                 question=question,
                 channel=channel,
                 user=user,
-                ra_backend_path=ra_backend_path,
+                db_backend_path=db_backend_path,
                 wiki_path=wiki_path,
                 slash_command=slash_command,
             )
@@ -354,12 +355,12 @@ async def _run_db_query_and_report(
     question: str,
     channel: str,
     user: str,
-    ra_backend_path: str,
+    db_backend_path: str,
     wiki_path: str | None,
     slash_command: str,
 ) -> None:
     try:
-        answer = await run_db_query(question, ra_backend_path, wiki_path)
+        answer = await run_db_query(question, db_backend_path, wiki_path)
         blocks = [
             {
                 "type": "section",

@@ -11,6 +11,11 @@ from slack_bot.runner import MAX_OUTPUT_LENGTH
 
 logger = logging.getLogger(__name__)
 
+# Claude CLI stdout 누적 상한 (bytes). 초과 시 프로세스 강제 종료하여 OOM/슬랙 장애 방지.
+# Slack 출력 자체는 MAX_OUTPUT_LENGTH 로 한 번 더 자르지만, psql 결과가 폭주할 때
+# 메모리에 전부 쌓이는 일을 막기 위한 안전장치.
+_MAX_STDOUT_BYTES = 256 * 1024  # 256KB
+
 
 # ra_backend/app/.env 에서 읽어올 키 목록
 _REQUIRED_RA_KEYS = (
@@ -33,9 +38,9 @@ class DBEnvError(Exception):
     """DB 자격증명 로드 실패."""
 
 
-def _load_db_env(ra_backend_path: str) -> dict[str, str]:
+def _load_db_env(db_backend_path: str) -> dict[str, str]:
     """ra_backend/app/.env 에서 DB 자격증명만 추출해 dict로 반환."""
-    env_path = Path(ra_backend_path) / "app" / ".env"
+    env_path = Path(db_backend_path) / "app" / ".env"
     if not env_path.exists():
         raise DBEnvError(f".env 파일을 찾을 수 없습니다: {env_path}")
 
@@ -82,6 +87,8 @@ def _build_system_prompt(db_env: dict[str, str], wiki_path: str | None) -> str:
 - 양쪽 모두 필요하면 각각 쿼리 후 결합 설명
 {wiki_line}
 ## SQL 실행 규칙 (엄수)
+> 이 규칙은 어플리케이션 레벨 방어선이다. 근본 방어는 **DB 유저 자체가 read-only 권한만 갖는 것**이며, 운영자는 가능한 한 `app/.env` 의 계정을 DB 레벨 read-only로 설정해야 한다. 아래 규칙은 계정이 쓰기 권한을 가진 경우에도 피해를 최소화하기 위한 2차 방어선이다.
+
 1. **SELECT만 허용**. INSERT/UPDATE/DELETE/DDL(CREATE/DROP/ALTER/TRUNCATE)/GRANT/REVOKE 절대 금지. 사용자가 요청해도 거부한다.
 2. 실행은 반드시 read-only 트랜잭션으로 감싼다:
    ```
@@ -111,12 +118,12 @@ def _build_system_prompt(db_env: dict[str, str], wiki_path: str | None) -> str:
 
 async def run_db_query(
     question: str,
-    ra_backend_path: str,
+    db_backend_path: str,
     wiki_path: str | None = None,
 ) -> str:
     """자연어 질문을 받아 Claude CLI로 SQL 생성·실행 후 결과 문자열 반환."""
     try:
-        db_env = _load_db_env(ra_backend_path)
+        db_env = _load_db_env(db_backend_path)
     except DBEnvError as exc:
         logger.error("DB 자격증명 로드 실패: %s", exc)
         return f":warning: DB 자격증명 로드 실패: {exc}"
@@ -140,23 +147,55 @@ async def run_db_query(
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
-            cwd=ra_backend_path,
+            cwd=db_backend_path,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=env,
         )
-        stdout, stderr = await proc.communicate()
 
-        if proc.returncode != 0:
+        # stdout을 라인 단위로 스트리밍하며 누적 바이트를 제한한다.
+        # 한계 초과 시 프로세스를 kill 해 메모리 폭주/행 차단.
+        assert proc.stdout is not None
+        chunks: list[bytes] = []
+        total_bytes = 0
+        stdout_truncated = False
+        async for line in proc.stdout:
+            if total_bytes + len(line) > _MAX_STDOUT_BYTES:
+                stdout_truncated = True
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass
+                break
+            chunks.append(line)
+            total_bytes += len(line)
+        await proc.wait()
+
+        # 에러 메시지 용도로 stderr도 읽되 과도하게 큰 경우 일부만 저장.
+        assert proc.stderr is not None
+        stderr_bytes = await proc.stderr.read(_MAX_STDOUT_BYTES)
+
+        if stdout_truncated:
+            logger.warning(
+                "Claude CLI stdout이 %d bytes 를 초과해 프로세스를 종료했습니다.",
+                _MAX_STDOUT_BYTES,
+            )
+
+        if proc.returncode != 0 and not stdout_truncated:
             logger.error(
                 "Claude CLI 실패 (exit %d)\nstdout: %s\nstderr: %s",
                 proc.returncode,
-                stdout.decode(errors="replace"),
-                stderr.decode(errors="replace"),
+                b"".join(chunks).decode(errors="replace"),
+                stderr_bytes.decode(errors="replace"),
             )
             return ":warning: DB 조회 중 오류가 발생했습니다. 로그를 확인해주세요."
 
-        output = stdout.decode(errors="replace").strip()
+        output = b"".join(chunks).decode(errors="replace").strip()
+        if stdout_truncated:
+            output += (
+                f"\n\n:warning: 결과가 {_MAX_STDOUT_BYTES // 1024}KB 를 초과해 "
+                "프로세스를 중단했습니다. 필터 조건을 좁혀 다시 질문해주세요."
+            )
         if len(output) > MAX_OUTPUT_LENGTH:
             output = output[:MAX_OUTPUT_LENGTH] + "\n\n... (truncated)"
         return output

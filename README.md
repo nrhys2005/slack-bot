@@ -11,7 +11,7 @@ slack_bot/
 ├── runner.py          # claude -p 비동기 실행 (--allowedTools 자동 적용)
 ├── handlers.py        # 슬래시 커맨드 & @멘션 핸들러
 ├── chat.py            # @멘션 질문 → Claude CLI로 답변 생성
-├── db_query.py        # /db — ra_backend 모델 기반 자연어→SQL→psql 실행
+├── db_query.py        # /db — db_backend 프로젝트 모델 기반 자연어→SQL→psql 실행
 └── task_manager.py    # 실행 중 태스크 추적 및 출력 누적
 projects.yaml              # 프로젝트 매핑 설정 (gitignore, example 참고)
 ```
@@ -35,7 +35,7 @@ cp projects.yaml.example projects.yaml
    - `/claude` — 범용 명령어 실행
    - `/projects` — 등록된 프로젝트 목록
    - `/stop` — 실행 중인 태스크 중단
-   - `/db` — ra_backend 모델 기반 자연어 DB 조회 (읽기 전용, 결과 최대 100행)
+   - `/db` — `db_backend: true` 로 지정된 프로젝트의 SQLAlchemy 모델 기반 자연어 DB 조회 (읽기 전용, 결과 최대 100행)
 4. **Event Subscriptions** → Subscribe to bot events:
    - `app_mention`
 5. **OAuth & Permissions** → Bot Token Scopes:
@@ -89,7 +89,7 @@ uv run slack-bot
 /stop              # 실행 중 목록 표시
 /stop <ID>         # 특정 태스크 중단
 
-# 자연어 DB 조회 (ra_backend 모델 기반, 읽기 전용 SELECT, 결과 최대 100행)
+# 자연어 DB 조회 (db_backend 프로젝트 모델 기반, 읽기 전용 SELECT, 결과 최대 100행)
 /db 지난주 신규 가입한 유저 수
 /db 최근 등록된 건축인허가 10건
 
@@ -104,6 +104,10 @@ uv run slack-bot
 
 - Python 3.11+
 - `claude` CLI가 PATH에 설치되어 있어야 함
-- `/db` 사용 시 `psql` CLI가 PATH에 있고, `ra-backend` 프로젝트가 `projects.yaml` 에 등록되어 있어야 함 (자격증명은 `<ra-backend>/app/.env` 에서 로드)
+- `/db` 사용 시:
+  - `psql` CLI가 PATH에 있어야 함
+  - `projects.yaml` 에 `db_backend: true` 가 설정된 FastAPI 백엔드 프로젝트가 1개 등록돼 있어야 함 (예: `ra_backend`)
+  - 해당 프로젝트의 `app/.env` 에서 `POSTGRESQL_RA_*` / `POSTGRESQL_CORE_*` 환경변수를 읽어 psql 접속에 사용
+  - **보안 권장**: `app/.env` 의 DB 유저는 DB 레벨에서 read-only 권한만 갖는 계정을 쓸 것. 앱 레벨 SELECT-only 프롬프트는 우회 가능성이 있으므로, DB 측에서도 방어하는 것이 안전 (예: `CREATE ROLE ... WITH LOGIN`, `GRANT SELECT ON ALL TABLES ...`).
 - 각 프로젝트에 `.claude/` 하네스가 설정되어 있어야 함
 - 프로젝트의 `.claude/settings.local.json`에 필요한 도구 권한이 허용되어 있어야 함
