@@ -109,7 +109,7 @@ pyproject.toml         # 의존성 및 스크립트 정의
 - `/projects`: 등록된 프로젝트 및 허용 명령어 목록 반환
 - `/stop`: 태스크 ID로 프로세스 중단, ID 없으면 실행 중 태스크 목록 표시
 - `app_mention`: @멘션 텍스트에서 질문 추출 → 스레드 대화 이력 조회 → `chat.answer_question()` 호출 → 스레드 답변
-- `_run_and_report()`: 실행 결과를 Block Kit으로 포맷하여 채널에 전송
+- `_run_and_report()`: 실행 결과를 Block Kit으로 포맷하여 채널에 전송. 실패 시 재실행 편의를 위해 원본 슬래시 명령어(`/dev ...` 또는 `/claude ...`)를 함께 표시
 
 ### chat.py
 - `answer_question(question, tasks, thread_history, wiki_project_path)`: 태스크 출력 최근 100줄 + 스레드 대화 이력을 컨텍스트로 Claude CLI 호출
