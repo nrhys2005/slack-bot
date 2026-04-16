@@ -75,8 +75,9 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
             f"`@bot 지금 어디까지 됐어?` 로 진행상황을 확인할 수 있습니다."
         )
 
+        slash_command = f"/dev {text}"
         asyncio.create_task(
-            _run_and_report(app, task_manager, project, task, prompt_display)
+            _run_and_report(app, task_manager, project, task, prompt_display, slash_command)
         )
 
     @app.command("/claude")
@@ -135,8 +136,9 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
             f"`@bot 지금 어디까지 됐어?` 로 진행상황을 확인할 수 있습니다."
         )
 
+        slash_command = f"/claude {text}"
         asyncio.create_task(
-            _run_and_report(app, task_manager, project, task, prompt_display)
+            _run_and_report(app, task_manager, project, task, prompt_display, slash_command)
         )
 
     @app.command("/projects")
@@ -252,6 +254,7 @@ async def _run_and_report(
     project,
     task,
     prompt_display: str,
+    slash_command: str,
 ) -> None:
     try:
         result = await run_claude(project, task.command, task.args, task)
@@ -268,7 +271,8 @@ async def _run_and_report(
                     "text": (
                         f"{emoji} *{task.project_name}* `{prompt_display}` {status} "
                         f"(ID: {task.task_id}, {task.elapsed_display})\n"
-                        f"실행자: <@{task.user}>"
+                        f"실행자: <@{task.user}>\n"
+                        f"원본 명령어: `{slash_command}`"
                     ),
                 },
             },
@@ -290,5 +294,8 @@ async def _run_and_report(
         task_manager.complete_task(task.task_id, False)
         await app.client.chat_postMessage(
             channel=task.channel,
-            text=f":warning: *{task.project_name}* `{prompt_display}` 실행 중 에러가 발생했습니다. 로그를 확인해주세요.",
+            text=(
+                f":warning: *{task.project_name}* `{prompt_display}` 실행 중 에러가 발생했습니다. "
+                f"로그를 확인해주세요.\n원본 명령어: `{slash_command}`"
+            ),
         )
