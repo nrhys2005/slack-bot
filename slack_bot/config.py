@@ -13,6 +13,7 @@ class ProjectConfig:
     path: str
     commands: list[str] = field(default_factory=list)
     wiki: bool = False
+    db_backend: bool = False
 
 
 def load_projects(config_path: str | None = None) -> dict[str, ProjectConfig]:
@@ -32,5 +33,6 @@ def load_projects(config_path: str | None = None) -> dict[str, ProjectConfig]:
             path=cfg["path"],
             commands=cfg.get("commands", []),
             wiki=cfg.get("wiki", False),
+            db_backend=cfg.get("db_backend", False),
         )
     return projects
