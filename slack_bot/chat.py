@@ -8,6 +8,7 @@ from slack_bot.db_query import (
     DBEnvError,
     _convert_md_tables_to_code_blocks,
     _load_db_env,
+    build_db_instructions,
 )
 from slack_bot.task_manager import TaskInfo
 
