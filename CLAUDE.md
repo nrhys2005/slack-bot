@@ -143,7 +143,7 @@ pyproject.toml         # 의존성 및 스크립트 정의
 ### db_query.py
 - `run_db_query(question, db_backend_path, wiki_path)`: 자연어 질문을 받아 Claude CLI로 SQL 생성·실행
 - `_load_db_env(db_backend_path)`: `{db_backend_path}/app/.env` 에서 `POSTGRESQL_RA_*`/`POSTGRESQL_CORE_*` 키만 추출, 누락 시 `DBEnvError`
-- `_build_system_prompt(db_env, wiki_path)`: ra/core 접속 정보·스키마·SELECT-only 규칙·psql 사용 예시를 포함한 시스템 프롬프트 생성. read-only 계정 사용을 근본 방어로 명시
+- `_build_system_prompt(db_env, wiki_path)`: ra/core 접속 정보·스키마·SELECT-only 규칙·psql 사용 예시를 포함한 시스템 프롬프트 생성. read-only 계정 사용을 근본 방어로 명시. 답변 형식은 Slack mrkdwn (표 대신 블릿 리스트/코드 블록 사용)
 - 서브프로세스 환경에 `PGPASSWORD_RA`, `PGPASSWORD_CORE` 를 주입해 Claude가 psql 실행 시 참조
 - `--allowedTools "Read,Glob,Grep,Bash(psql:*)"` 로 도구 범위를 DB 조회 용도로 한정
 - stdout은 라인 단위로 스트리밍하며 누적 바이트가 `_MAX_STDOUT_BYTES` (256KB) 를 넘으면 프로세스를 `kill()` 해 OOM 방어
