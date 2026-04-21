@@ -47,7 +47,8 @@ SYSTEM_PROMPT = (
 
 DB_ADDON_PROMPT = (
     "\n4. 데이터 조회/검색 질문 → DB에서 직접 조회:\n"
-    "{db_instructions}"
+    "{db_instructions}\n"
+    "DB 조회 시 반드시 실행한 SQL 전문을 ``` 블록으로 결과에 포함할 것 (생략 금지)"
 )
 
 
