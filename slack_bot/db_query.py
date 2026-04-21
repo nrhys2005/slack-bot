@@ -118,7 +118,8 @@ def _load_db_env(db_backend_path: str) -> dict[str, str]:
     return {k: values[k] for k in required}
 
 
-def _build_system_prompt(db_env: dict[str, str], wiki_path: str | None) -> str:
+def build_db_instructions(db_env: dict[str, str]) -> str:
+    """DB 접속 정보 + SQL 규칙을 텍스트로 반환. chat.py에서도 재사용."""
     ra_user = db_env["POSTGRESQL_RA_USERNAME"]
     ra_host = db_env["POSTGRESQL_RA_READ_HOST"]
     ra_port = db_env["POSTGRESQL_RA_PORT"]
@@ -127,6 +128,26 @@ def _build_system_prompt(db_env: dict[str, str], wiki_path: str | None) -> str:
     core_host = db_env["POSTGRESQL_CORE_READ_HOST"]
     core_port = db_env["POSTGRESQL_CORE_PORT"]
     core_db = db_env["POSTGRESQL_CORE_DB_NAME"]
+
+    return f"""DB 접속 정보:
+- ra DB (운영 데이터): host={ra_host}, port={ra_port}, user={ra_user}, db={ra_db}, password는 환경변수 PGPASSWORD_RA
+  주요 스키마: ra_v2, out_kr, ra_v2_english, out_kr_english
+- core DB (마스터/참조 데이터): host={core_host}, port={core_port}, user={core_user}, db={core_db}, password는 환경변수 PGPASSWORD_CORE
+  주요 스키마: ra_v2, external_data, r3, manage, mart_data
+
+스키마 파악: app/models/ra/*.py, app/models/core/*.py 의 SQLAlchemy 모델을 Read/Grep해 확인
+
+SQL 규칙 (엄수):
+1. SELECT만 허용. INSERT/UPDATE/DELETE/DDL 절대 금지
+2. BEGIN; SET TRANSACTION READ ONLY; <SELECT ...>; ROLLBACK; 으로 래핑
+3. 모든 SELECT에 LIMIT 100 적용
+4. psql 호출:
+   PGPASSWORD="$PGPASSWORD_RA" psql -h {ra_host} -p {ra_port} -U {ra_user} -d {ra_db} -v ON_ERROR_STOP=1 -c "BEGIN; SET TRANSACTION READ ONLY; SELECT ... LIMIT 100; ROLLBACK;"
+   core DB: PGPASSWORD_CORE + core 접속정보 사용"""
+
+
+def _build_system_prompt(db_env: dict[str, str], wiki_path: str | None) -> str:
+    db_instructions = build_db_instructions(db_env)
 
     wiki_line = (
         f"- 도메인 용어가 모호하면 위키 디렉토리({wiki_path})에서 Glob/Grep/Read로 찾아본다.\n"

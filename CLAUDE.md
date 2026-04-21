@@ -135,9 +135,10 @@ pyproject.toml         # 의존성 및 스크립트 정의
 - `_run_and_report()`: 실행 결과를 Block Kit으로 포맷하여 채널에 전송. 실패 시 재실행 편의를 위해 원본 슬래시 명령어(`/dev ...` 또는 `/claude ...`)를 함께 표시
 
 ### chat.py
-- `answer_question(question, tasks, thread_history, wiki_project_path)`: 태스크 출력 최근 100줄 + 스레드 대화 이력을 컨텍스트로 Claude CLI 호출
-- `wiki_project_path` 설정 시 위키 프로젝트 디렉토리에서 실행, Notion MCP 도구(`--allowedTools`) 허용
-- 항상 위키 도구 허용 (로컬 Glob/Grep/Read 우선, Notion MCP 폴백), 태스크 컨텍스트는 있을 때만 포함
+- `answer_question(question, tasks, thread_history, wiki_project_path, db_backend_path)`: 태스크 출력 최근 100줄 + 스레드 대화 이력을 컨텍스트로 Claude CLI 호출
+- `wiki_project_path` 설정 시 위키 디렉토리 마크다운 파일 검색(Glob/Grep/Read) + Notion MCP 폴백
+- `db_backend_path` 설정 시 DB 조회도 가능 (psql, READ ONLY 트랜잭션). `db_query.build_db_instructions()` 재사용
+- cwd: `db_backend_path` 우선, 없으면 `wiki_project_path`. 위키는 절대경로로 접근
 - `claude -p` 서브프로세스로 실행 (OAuth 인증 사용)
 
 ### db_query.py

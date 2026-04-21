@@ -277,10 +277,11 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
         # 태스크 정리
         task_manager.cleanup_old()
 
-        # 항상 위키 도구 허용, 태스크가 있으면 출력도 컨텍스트에 포함
+        # 위키 검색 + DB 조회 + 태스크 컨텍스트 포함
         answer = await answer_question(
             question, tasks, thread_history,
             wiki_project_path=wiki_path,
+            db_backend_path=db_backend_path,
         )
 
         # 리액션 제거
