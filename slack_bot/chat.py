@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from pathlib import Path
 
 from slack_bot.db_query import (
     DBEnvError,
@@ -73,7 +74,7 @@ async def answer_question(
     wiki_label = wiki_project_path or "없음"
     system = SYSTEM_PROMPT.format(wiki_path=wiki_label)
     db_env: dict[str, str] | None = None
-    if db_backend_path:
+    if db_backend_path and Path(db_backend_path).is_dir():
         try:
             db_env = _load_db_env(db_backend_path)
             db_instructions = build_db_instructions(db_env)
@@ -97,8 +98,12 @@ async def answer_question(
 
         cmd = ["claude", "-p", prompt, "--output-format", "text"]
 
-        # cwd: DB 조회가 가능하면 db_backend 경로, 아니면 위키 경로
-        cwd = db_backend_path or wiki_project_path
+        # cwd: 존재하는 경로만 사용 (서버 환경에서 경로가 없을 수 있음)
+        cwd = None
+        if db_backend_path and Path(db_backend_path).is_dir():
+            cwd = db_backend_path
+        elif wiki_project_path and Path(wiki_project_path).is_dir():
+            cwd = wiki_project_path
 
         # 도구 허용 목록 구성
         allowed_tools = []
