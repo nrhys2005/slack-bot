@@ -4,12 +4,19 @@
       "Bash(uv sync:*)",
       "Bash(uv run:*)",
       "Bash(git:*)",
+      "Bash(gh:*)",
       "Bash(claude -p \"안녕\" --output-format text)",
       "Bash(claude:*)",
       "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\(list\\(d.keys\\(\\)\\)\\)\")",
       "Bash(env)",
       "Bash(ls ~/.claude/auth*)",
-      "Bash(ls ~/.claude/*.json)"
+      "Bash(ls ~/.claude/*.json)",
+      "Bash(ruff:*)",
+      "Bash(python -m pytest:*)",
+      "mcp__mcp-server__jira_get_issue",
+      "mcp__mcp-server__jira_search_issues",
+      "mcp__mcp-server__jira_add_comment",
+      "mcp__mcp-server__jira_update_issue"
     ]
   }
 }
