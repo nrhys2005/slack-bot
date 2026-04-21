@@ -38,6 +38,71 @@ class DBEnvError(Exception):
     """DB 자격증명 로드 실패."""
 
 
+def _convert_md_tables_to_code_blocks(text: str) -> str:
+    """마크다운 테이블(|...|)을 Slack에서 보기 좋은 코드 블록으로 변환."""
+    lines = text.split("\n")
+    result: list[str] = []
+    table_lines: list[str] = []
+    in_table = False
+
+    for line in lines:
+        stripped = line.strip()
+        is_table_line = stripped.startswith("|") and stripped.endswith("|")
+
+        if is_table_line:
+            if not in_table:
+                in_table = True
+                table_lines = []
+            table_lines.append(stripped)
+        else:
+            if in_table:
+                result.append(_format_table(table_lines))
+                in_table = False
+                table_lines = []
+            result.append(line)
+
+    if in_table:
+        result.append(_format_table(table_lines))
+
+    return "\n".join(result)
+
+
+def _format_table(table_lines: list[str]) -> str:
+    """파이프 테이블 행들을 정렬된 코드 블록 텍스트로 변환."""
+    # 구분선(|---|---|) 제거
+    rows: list[list[str]] = []
+    for line in table_lines:
+        cells = [c.strip() for c in line.strip("|").split("|")]
+        # 구분선 판별: 모든 셀이 ---만으로 구성
+        if all(set(c) <= {"-", ":"} and len(c) > 0 for c in cells):
+            continue
+        rows.append(cells)
+
+    if not rows:
+        return ""
+
+    # 각 컬럼 최대 너비 계산
+    col_count = max(len(r) for r in rows)
+    widths = [0] * col_count
+    for row in rows:
+        for i, cell in enumerate(row):
+            widths[i] = max(widths[i], len(cell))
+
+    # 정렬된 텍스트 생성
+    formatted: list[str] = []
+    for idx, row in enumerate(rows):
+        parts = []
+        for i in range(col_count):
+            cell = row[i] if i < len(row) else ""
+            parts.append(cell.ljust(widths[i]))
+        formatted.append("  ".join(parts))
+        # 헤더 아래 구분선
+        if idx == 0:
+            formatted.append("  ".join("-" * w for w in widths))
+
+    return "```\n" + "\n".join(formatted) + "\n```"
+
+
 def _load_db_env(db_backend_path: str) -> dict[str, str]:
     """ra_backend/app/.env 에서 DB 자격증명만 추출해 dict로 반환."""
     env_path = Path(db_backend_path) / "app" / ".env"
@@ -221,6 +286,8 @@ async def run_db_query(
                 f"\n\n:warning: 결과가 {_MAX_STDOUT_BYTES // 1024}KB 를 초과해 "
                 "프로세스를 중단했습니다. 필터 조건을 좁혀 다시 질문해주세요."
             )
+        # 마크다운 테이블 → 코드 블록 변환 (Slack 호환)
+        output = _convert_md_tables_to_code_blocks(output)
         if len(output) > MAX_OUTPUT_LENGTH:
             output = output[:MAX_OUTPUT_LENGTH] + "\n\n... (truncated)"
         return output
