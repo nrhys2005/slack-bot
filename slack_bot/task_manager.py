@@ -70,14 +70,16 @@ class TaskManager:
     def get_tasks_for_channel(self, channel: str) -> list[TaskInfo]:
         """채널의 실행 중 태스크 반환. 없으면 최근 완료 태스크 반환."""
         running = [
-            t for t in self._tasks.values()
+            t
+            for t in self._tasks.values()
             if t.channel == channel and t.status == "running"
         ]
         if running:
             return running
         # 실행 중인 게 없으면 최근 완료/실패 태스크 중 10분 이내 것
         recent = [
-            t for t in self._tasks.values()
+            t
+            for t in self._tasks.values()
             if t.channel == channel
             and t.status in ("completed", "failed", "stopped")
             and t.elapsed < 600
@@ -103,7 +105,8 @@ class TaskManager:
         """완료 후 max_age초 지난 태스크 제거."""
         now = time.time()
         to_remove = [
-            tid for tid, t in self._tasks.items()
+            tid
+            for tid, t in self._tasks.items()
             if t.status != "running" and (now - t.start_time) > max_age
         ]
         for tid in to_remove:

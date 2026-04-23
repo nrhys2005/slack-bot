@@ -59,11 +59,15 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
         project = projects.get(project_name)
         if project is None:
             project_list = ", ".join(f"`{p}`" for p in projects)
-            await respond(f"알 수 없는 프로젝트: `{project_name}`\n등록된 프로젝트: {project_list}")
+            await respond(
+                f"알 수 없는 프로젝트: `{project_name}`\n등록된 프로젝트: {project_list}"
+            )
             return
 
         if "harness" not in project.commands:
-            await respond(f"`{project_name}` 프로젝트에 harness 명령어가 등록되어 있지 않습니다.")
+            await respond(
+                f"`{project_name}` 프로젝트에 harness 명령어가 등록되어 있지 않습니다."
+            )
             return
 
         # 태스크 생성
@@ -80,7 +84,9 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
 
         slash_command = f"/dev {text}"
         asyncio.create_task(
-            _run_and_report(app, task_manager, project, task, prompt_display, slash_command)
+            _run_and_report(
+                app, task_manager, project, task, prompt_display, slash_command
+            )
         )
 
     @app.command("/claude")
@@ -116,15 +122,15 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
         project = projects.get(project_name)
         if project is None:
             project_list = ", ".join(f"`{p}`" for p in projects)
-            await respond(f"알 수 없는 프로젝트: `{project_name}`\n등록된 프로젝트: {project_list}")
+            await respond(
+                f"알 수 없는 프로젝트: `{project_name}`\n등록된 프로젝트: {project_list}"
+            )
             return
 
         # 명령어 검증
         if cmd not in project.commands:
             cmd_list = ", ".join(f"`{c}`" for c in project.commands)
-            await respond(
-                f"`{project_name}`에서 허용된 명령어: {cmd_list}"
-            )
+            await respond(f"`{project_name}`에서 허용된 명령어: {cmd_list}")
             return
 
         # 태스크 생성
@@ -141,7 +147,9 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
 
         slash_command = f"/claude {text}"
         asyncio.create_task(
-            _run_and_report(app, task_manager, project, task, prompt_display, slash_command)
+            _run_and_report(
+                app, task_manager, project, task, prompt_display, slash_command
+            )
         )
 
     @app.command("/projects")
@@ -268,9 +276,7 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
                 )
                 messages = result.get("messages", [])
                 # 현재 메시지 제외, 최근 20개만 유지
-                thread_history = [
-                    m for m in messages if m["ts"] != event["ts"]
-                ][-20:]
+                thread_history = [m for m in messages if m["ts"] != event["ts"]][-20:]
             except Exception:
                 logger.warning("스레드 이력 조회 실패", exc_info=True)
 
@@ -279,7 +285,9 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
 
         # 위키 검색 + DB 조회 + 태스크 컨텍스트 포함
         answer = await answer_question(
-            question, tasks, thread_history,
+            question,
+            tasks,
+            thread_history,
             wiki_project_path=wiki_path,
             db_backend_path=db_backend_path,
         )
@@ -330,7 +338,9 @@ async def _run_and_report(
                 "type": "section",
                 "text": {
                     "type": "mrkdwn",
-                    "text": f"```\n{result.output}\n```" if result.output else "_출력 없음_",
+                    "text": f"```\n{result.output}\n```"
+                    if result.output
+                    else "_출력 없음_",
                 },
             },
         ]

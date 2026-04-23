@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 # Slack 출력 자체는 MAX_OUTPUT_LENGTH 로 한 번 더 자르지만, psql 결과가 폭주할 때
 # 메모리에 전부 쌓이는 일을 막기 위한 안전장치.
 _MAX_STDOUT_BYTES = 256 * 1024  # 256KB
+DB_QUERY_TIMEOUT = 120  # 2분. DB 조회는 충분한 시간
 
 
 # ra_backend/app/.env 에서 읽어올 키 목록
@@ -249,10 +250,15 @@ async def run_db_query(
     env["PGPASSWORD_CORE"] = db_env["POSTGRESQL_CORE_PASSWORD"]
 
     cmd = [
-        "claude", "-p", prompt,
-        "--output-format", "text",
-        "--permission-mode", "bypassPermissions",
-        "--allowedTools", "Read,Glob,Grep,Bash(psql:*)",
+        "claude",
+        "-p",
+        prompt,
+        "--output-format",
+        "text",
+        "--permission-mode",
+        "bypassPermissions",
+        "--allowedTools",
+        "Read,Glob,Grep,Bash(psql:*)",
     ]
 
     try:
@@ -266,7 +272,8 @@ async def run_db_query(
 
         # stdout을 라인 단위로 스트리밍하며 누적 바이트를 제한한다.
         # 한계 초과 시 프로세스를 kill 해 메모리 폭주/행 차단.
-        assert proc.stdout is not None
+        if proc.stdout is None:
+            raise RuntimeError("stdout pipe not created")
         chunks: list[bytes] = []
         total_bytes = 0
         stdout_truncated = False
@@ -280,10 +287,23 @@ async def run_db_query(
                 break
             chunks.append(line)
             total_bytes += len(line)
-        await proc.wait()
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=DB_QUERY_TIMEOUT)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            logger.error(
+                "Claude CLI DB 조회 시간 초과 (%ds), 강제 종료",
+                DB_QUERY_TIMEOUT,
+            )
+            return (
+                ":warning: DB 조회 시간이 초과되었습니다. "
+                "질문을 더 구체적으로 해주세요."
+            )
 
         # 에러 메시지 용도로 stderr도 읽되 과도하게 큰 경우 일부만 저장.
-        assert proc.stderr is not None
+        if proc.stderr is None:
+            raise RuntimeError("stderr pipe not created")
         stderr_bytes = await proc.stderr.read(_MAX_STDOUT_BYTES)
 
         if stdout_truncated:

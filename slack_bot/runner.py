@@ -11,6 +11,7 @@ from slack_bot.task_manager import TaskInfo
 logger = logging.getLogger(__name__)
 
 MAX_OUTPUT_LENGTH = 3900  # Slack 메시지 제한 (~4000) 여유분 확보
+SUBPROCESS_TIMEOUT = 3600  # 1시간. harness 파이프라인은 오래 걸릴 수 있음
 
 
 @dataclass
@@ -20,7 +21,9 @@ class RunResult:
     return_code: int
 
 
-async def run_claude(project: ProjectConfig, command: str, args: str, task: TaskInfo) -> RunResult:
+async def run_claude(
+    project: ProjectConfig, command: str, args: str, task: TaskInfo
+) -> RunResult:
     """프로젝트 디렉토리에서 claude -p 를 비동기로 실행한다. stdout을 라인별로 누적한다."""
     # 비대화형 환경이므로 --auto 플래그를 항상 포함
     if args:
@@ -36,9 +39,17 @@ async def run_claude(project: ProjectConfig, command: str, args: str, task: Task
     # ANTHROPIC_API_KEY를 제거하여 Claude Code OAuth 인증 사용
     # Slack은 비대화형이므로 항상 --allowedTools 적용
     env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
-    cmd = ["claude", "-p", prompt, "--output-format", "text",
-           "--permission-mode", "bypassPermissions",
-           "--allowedTools", "Edit,Write,Bash,Glob,Grep,Read,Agent,mcp__*"]
+    cmd = [
+        "claude",
+        "-p",
+        prompt,
+        "--output-format",
+        "text",
+        "--permission-mode",
+        "bypassPermissions",
+        "--allowedTools",
+        "Edit,Write,Bash,Glob,Grep,Read,Agent,mcp__*",
+    ]
 
     proc = await asyncio.create_subprocess_exec(
         *cmd,
@@ -50,18 +61,49 @@ async def run_claude(project: ProjectConfig, command: str, args: str, task: Task
 
     task.process = proc
 
-    # stdout 라인별 스트리밍 읽기
-    assert proc.stdout is not None
-    async for line in proc.stdout:
-        task.output_lines.append(line.decode())
+    if proc.stdout is None:
+        raise RuntimeError("stdout pipe not created")
+    if proc.stderr is None:
+        raise RuntimeError("stderr pipe not created")
 
-    await proc.wait()
+    # stderr를 동시에 읽는 태스크 (deadlock 방지, 바이트 제한)
+    async def _drain_stderr() -> bytes:
+        return await proc.stderr.read(MAX_OUTPUT_LENGTH * 2)
+
+    stderr_task = asyncio.create_task(_drain_stderr())
+
+    # stdout 라인별 스트리밍 읽기
+    async def _read_stdout() -> None:
+        async for line in proc.stdout:
+            task.output_lines.append(line.decode(errors="replace"))
+
+    # stdout 스트리밍 + 프로세스 종료 대기를 병렬 실행하며 전체 타임아웃 적용
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(_read_stdout(), proc.wait()),
+            timeout=SUBPROCESS_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        stderr_task.cancel()
+        logger.error(
+            "Claude CLI 프로세스 시간 초과 (%ds), 강제 종료", SUBPROCESS_TIMEOUT
+        )
+        output = task.output_text.strip()
+        if len(output) > MAX_OUTPUT_LENGTH:
+            output = output[:MAX_OUTPUT_LENGTH] + "\n\n... (truncated)"
+        timeout_msg = (
+            f"\n\n:warning: 실행 시간이 {SUBPROCESS_TIMEOUT}초를 초과하여 "
+            "강제 종료되었습니다."
+        )
+        return RunResult(success=False, output=output + timeout_msg, return_code=-1)
+
+    stderr_data = await stderr_task
 
     # stderr 처리
-    assert proc.stderr is not None
-    stderr_data = await proc.stderr.read()
     if not task.output_lines and stderr_data:
-        task.output_lines.append(stderr_data.decode())
+        task.output_lines.append(stderr_data.decode(errors="replace"))
 
     output = task.output_text.strip()
     if len(output) > MAX_OUTPUT_LENGTH:
