@@ -66,19 +66,23 @@ async def run_claude(
     if proc.stderr is None:
         raise RuntimeError("stderr pipe not created")
 
-    # stderr를 동시에 읽는 태스크 (deadlock 방지)
+    # stderr를 동시에 읽는 태스크 (deadlock 방지, 바이트 제한)
     async def _drain_stderr() -> bytes:
-        return await proc.stderr.read()
+        return await proc.stderr.read(MAX_OUTPUT_LENGTH * 2)
 
     stderr_task = asyncio.create_task(_drain_stderr())
 
-    # stdout 라인별 스트리밍 읽기 (기존과 동일)
-    async for line in proc.stdout:
-        task.output_lines.append(line.decode(errors="replace"))
+    # stdout 라인별 스트리밍 읽기
+    async def _read_stdout() -> None:
+        async for line in proc.stdout:
+            task.output_lines.append(line.decode(errors="replace"))
 
-    # timeout 적용하여 프로세스 종료 대기
+    # stdout 스트리밍 + 프로세스 종료 대기를 병렬 실행하며 전체 타임아웃 적용
     try:
-        await asyncio.wait_for(proc.wait(), timeout=SUBPROCESS_TIMEOUT)
+        await asyncio.wait_for(
+            asyncio.gather(_read_stdout(), proc.wait()),
+            timeout=SUBPROCESS_TIMEOUT,
+        )
     except asyncio.TimeoutError:
         proc.kill()
         await proc.wait()

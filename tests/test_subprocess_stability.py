@@ -76,6 +76,7 @@ def _setup_asyncio_mock(mock_asyncio: MagicMock, proc: MagicMock) -> None:
     mock_asyncio.subprocess = asyncio.subprocess
     mock_asyncio.create_task = lambda coro: asyncio.ensure_future(coro)
     mock_asyncio.wait_for = asyncio.wait_for
+    mock_asyncio.gather = asyncio.gather
     mock_asyncio.TimeoutError = asyncio.TimeoutError
 
 
@@ -172,8 +173,15 @@ async def test_run_claude_timeout():
     proc.wait = _wait
 
     async def fake_wait_for(coro, timeout):
-        # coro를 소비하지 않으면 warning 발생하므로 close
-        coro.close()
+        # gather가 반환하는 Future를 cancel하여 정리
+        if hasattr(coro, "cancel"):
+            coro.cancel()
+            try:
+                await coro
+            except asyncio.CancelledError:
+                pass
+        elif hasattr(coro, "close"):
+            coro.close()
         raise asyncio.TimeoutError()
 
     with patch("slack_bot.runner.asyncio") as mock_asyncio:
@@ -181,6 +189,7 @@ async def test_run_claude_timeout():
         mock_asyncio.subprocess = asyncio.subprocess
         mock_asyncio.TimeoutError = asyncio.TimeoutError
         mock_asyncio.create_task = lambda coro: asyncio.ensure_future(coro)
+        mock_asyncio.gather = asyncio.gather
         mock_asyncio.wait_for = fake_wait_for
 
         result = await run_claude(project, "harness", "SB-01", task)
