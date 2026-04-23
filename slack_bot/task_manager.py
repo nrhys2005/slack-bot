@@ -17,6 +17,7 @@ class TaskInfo:
     status: str = "running"  # running | completed | failed | stopped
     output_lines: list[str] = field(default_factory=list)
     process: asyncio.subprocess.Process | None = None
+    complete_time: float | None = None
 
     @property
     def elapsed(self) -> float:
@@ -38,8 +39,9 @@ class TaskManager:
     def __init__(self) -> None:
         self._tasks: dict[str, TaskInfo] = {}
         self._counter: int = 0
+        self._lock = asyncio.Lock()
 
-    def create_task(
+    async def create_task(
         self,
         project_name: str,
         command: str,
@@ -47,19 +49,20 @@ class TaskManager:
         user: str,
         channel: str,
     ) -> TaskInfo:
-        self._counter += 1
-        task_id = f"{self._counter:03d}"
-        task = TaskInfo(
-            task_id=task_id,
-            project_name=project_name,
-            command=command,
-            args=args,
-            user=user,
-            channel=channel,
-            start_time=time.time(),
-        )
-        self._tasks[task_id] = task
-        return task
+        async with self._lock:
+            self._counter += 1
+            task_id = f"{self._counter:03d}"
+            task = TaskInfo(
+                task_id=task_id,
+                project_name=project_name,
+                command=command,
+                args=args,
+                user=user,
+                channel=channel,
+                start_time=time.time(),
+            )
+            self._tasks[task_id] = task
+            return task
 
     def get_task(self, task_id: str) -> TaskInfo | None:
         return self._tasks.get(task_id)
@@ -91,8 +94,12 @@ class TaskManager:
         if task is None or task.status != "running":
             return False
         if task.process and task.process.returncode is None:
-            task.process.terminate()
+            try:
+                task.process.terminate()
+            except ProcessLookupError:
+                pass
         task.status = "stopped"
+        task.complete_time = time.time()
         return True
 
     def complete_task(self, task_id: str, success: bool) -> None:
@@ -100,6 +107,7 @@ class TaskManager:
         if task is None:
             return
         task.status = "completed" if success else "failed"
+        task.complete_time = time.time()
 
     def cleanup_old(self, max_age: float = 1800) -> None:
         """완료 후 max_age초 지난 태스크 제거."""
@@ -107,7 +115,9 @@ class TaskManager:
         to_remove = [
             tid
             for tid, t in self._tasks.items()
-            if t.status != "running" and (now - t.start_time) > max_age
+            if t.status != "running"
+            and t.complete_time is not None
+            and (now - t.complete_time) > max_age
         ]
         for tid in to_remove:
             del self._tasks[tid]

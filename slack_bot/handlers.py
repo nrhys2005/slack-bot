@@ -70,10 +70,13 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
             )
             return
 
-        # 태스크 생성
+        # 태스크 정리 & 생성
+        task_manager.cleanup_old()
         user = command.get("user_name", "unknown")
         channel = command["channel_id"]
-        task = task_manager.create_task(project_name, "harness", args, user, channel)
+        task = await task_manager.create_task(
+            project_name, "harness", args, user, channel
+        )
         prompt_display = f"/harness {args}".strip()
 
         await respond(
@@ -133,10 +136,11 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
             await respond(f"`{project_name}`에서 허용된 명령어: {cmd_list}")
             return
 
-        # 태스크 생성
+        # 태스크 정리 & 생성
+        task_manager.cleanup_old()
         user = command.get("user_name", "unknown")
         channel = command["channel_id"]
-        task = task_manager.create_task(project_name, cmd, args, user, channel)
+        task = await task_manager.create_task(project_name, cmd, args, user, channel)
         prompt_display = f"/{cmd} {args}".strip()
 
         await respond(
@@ -219,6 +223,7 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
             )
             return
 
+        task_manager.cleanup_old()
         user = command.get("user_name", "unknown")
         channel = command["channel_id"]
         slash_command = f"/db {question}"
