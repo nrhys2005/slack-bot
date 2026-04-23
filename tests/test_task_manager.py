@@ -71,8 +71,8 @@ async def test_cleanup_old(tm: TaskManager):
     """완료 후 max_age 초과 태스크는 cleanup_old()에서 제거된다."""
     task = await tm.create_task("proj", "cmd", "", "user", "ch")
     tm.complete_task(task.task_id, True)
-    # start_time을 과거로 조작
-    task.start_time -= 3600
+    # complete_time을 과거로 조작
+    task.complete_time -= 3600
 
     tm.cleanup_old(max_age=1800)
     assert tm.get_task(task.task_id) is None
