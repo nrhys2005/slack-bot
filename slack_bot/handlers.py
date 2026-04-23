@@ -14,8 +14,22 @@ from slack_bot.task_manager import TaskManager
 
 logger = logging.getLogger(__name__)
 
+MAX_CONCURRENT_CLAUDE = 5
+
+
+def _log_task_exception(t: asyncio.Task) -> None:
+    """백그라운드 태스크의 미처리 예외를 로깅."""
+    if t.cancelled():
+        return
+    exc = t.exception()
+    if exc is not None:
+        logger.error("백그라운드 태스크 예외: %s", exc, exc_info=exc)
+
 
 def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
+    _claude_semaphore = asyncio.Semaphore(MAX_CONCURRENT_CLAUDE)
+    _background_tasks: set[asyncio.Task] = set()
+
     projects = load_projects()
     wiki_project = next((p for p in projects.values() if p.wiki), None)
     wiki_path = wiki_project.path if wiki_project else None
@@ -86,11 +100,20 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
         )
 
         slash_command = f"/dev {text}"
-        asyncio.create_task(
+        bg_task = asyncio.create_task(
             _run_and_report(
-                app, task_manager, project, task, prompt_display, slash_command
+                app,
+                task_manager,
+                project,
+                task,
+                prompt_display,
+                slash_command,
+                _claude_semaphore,
             )
         )
+        _background_tasks.add(bg_task)
+        bg_task.add_done_callback(_background_tasks.discard)
+        bg_task.add_done_callback(_log_task_exception)
 
     @app.command("/claude")
     async def handle_claude_command(ack, command, respond):
@@ -150,11 +173,20 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
         )
 
         slash_command = f"/claude {text}"
-        asyncio.create_task(
+        bg_task = asyncio.create_task(
             _run_and_report(
-                app, task_manager, project, task, prompt_display, slash_command
+                app,
+                task_manager,
+                project,
+                task,
+                prompt_display,
+                slash_command,
+                _claude_semaphore,
             )
         )
+        _background_tasks.add(bg_task)
+        bg_task.add_done_callback(_background_tasks.discard)
+        bg_task.add_done_callback(_log_task_exception)
 
     @app.command("/projects")
     async def handle_projects_command(ack, respond):
@@ -230,7 +262,7 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
 
         await respond(f":mag: `{question}` 조회 중...")
 
-        asyncio.create_task(
+        bg_task = asyncio.create_task(
             _run_db_query_and_report(
                 app,
                 question=question,
@@ -239,8 +271,12 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
                 db_backend_path=db_backend_path,
                 wiki_path=wiki_path,
                 slash_command=slash_command,
+                semaphore=_claude_semaphore,
             )
         )
+        _background_tasks.add(bg_task)
+        bg_task.add_done_callback(_background_tasks.discard)
+        bg_task.add_done_callback(_log_task_exception)
 
     @app.event("app_mention")
     async def handle_mention(event, say, client):
@@ -289,13 +325,18 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
         task_manager.cleanup_old()
 
         # 위키 검색 + DB 조회 + 태스크 컨텍스트 포함
-        answer = await answer_question(
-            question,
-            tasks,
-            thread_history,
-            wiki_project_path=wiki_path,
-            db_backend_path=db_backend_path,
-        )
+        try:
+            async with _claude_semaphore:
+                answer = await answer_question(
+                    question,
+                    tasks,
+                    thread_history,
+                    wiki_project_path=wiki_path,
+                    db_backend_path=db_backend_path,
+                )
+        except Exception:
+            logger.exception("질문 답변 처리 중 에러")
+            answer = ":warning: 질문 처리 중 오류가 발생했습니다."
 
         # 리액션 제거
         try:
@@ -318,9 +359,11 @@ async def _run_and_report(
     task,
     prompt_display: str,
     slash_command: str,
+    semaphore: asyncio.Semaphore,
 ) -> None:
     try:
-        result = await run_claude(project, task.command, task.args, task)
+        async with semaphore:
+            result = await run_claude(project, task.command, task.args, task)
         task_manager.complete_task(task.task_id, result.success)
 
         status = "완료" if result.success else "실패"
@@ -374,9 +417,11 @@ async def _run_db_query_and_report(
     db_backend_path: str,
     wiki_path: str | None,
     slash_command: str,
+    semaphore: asyncio.Semaphore,
 ) -> None:
     try:
-        answer = await run_db_query(question, db_backend_path, wiki_path)
+        async with semaphore:
+            answer = await run_db_query(question, db_backend_path, wiki_path)
         blocks = [
             {
                 "type": "section",
