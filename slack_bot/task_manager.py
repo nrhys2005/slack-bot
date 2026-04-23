@@ -38,8 +38,9 @@ class TaskManager:
     def __init__(self) -> None:
         self._tasks: dict[str, TaskInfo] = {}
         self._counter: int = 0
+        self._lock = asyncio.Lock()
 
-    def create_task(
+    async def create_task(
         self,
         project_name: str,
         command: str,
@@ -47,19 +48,20 @@ class TaskManager:
         user: str,
         channel: str,
     ) -> TaskInfo:
-        self._counter += 1
-        task_id = f"{self._counter:03d}"
-        task = TaskInfo(
-            task_id=task_id,
-            project_name=project_name,
-            command=command,
-            args=args,
-            user=user,
-            channel=channel,
-            start_time=time.time(),
-        )
-        self._tasks[task_id] = task
-        return task
+        async with self._lock:
+            self._counter += 1
+            task_id = f"{self._counter:03d}"
+            task = TaskInfo(
+                task_id=task_id,
+                project_name=project_name,
+                command=command,
+                args=args,
+                user=user,
+                channel=channel,
+                start_time=time.time(),
+            )
+            self._tasks[task_id] = task
+            return task
 
     def get_task(self, task_id: str) -> TaskInfo | None:
         return self._tasks.get(task_id)
@@ -91,7 +93,10 @@ class TaskManager:
         if task is None or task.status != "running":
             return False
         if task.process and task.process.returncode is None:
-            task.process.terminate()
+            try:
+                task.process.terminate()
+            except ProcessLookupError:
+                pass
         task.status = "stopped"
         return True
 
