@@ -15,6 +15,8 @@ from slack_bot.task_manager import TaskInfo
 
 logger = logging.getLogger(__name__)
 
+CHAT_TIMEOUT = 300  # 5분
+
 
 def _build_context(tasks: list[TaskInfo]) -> str:
     """태스크 목록을 LLM 컨텍스트 문자열로 변환."""
@@ -69,7 +71,7 @@ async def answer_question(
             role = "봇" if msg.get("bot_id") else "사용자"
             text = msg.get("text", "")
             lines.append(f"{role}: {text}")
-        history_text = f"\n\n이전 대화:\n" + "\n".join(lines)
+        history_text = "\n\n이전 대화:\n" + "\n".join(lines)
 
     # DB 조회 가능 시 시스템 프롬프트에 DB 지시사항 추가
     wiki_label = wiki_project_path or "없음"
@@ -125,18 +127,29 @@ async def answer_question(
             stderr=asyncio.subprocess.PIPE,
             env=env,
         )
-        stdout, stderr = await proc.communicate()
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=CHAT_TIMEOUT
+            )
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.communicate()  # 리소스 정리
+            logger.error("Claude CLI 응답 시간 초과 (%ds)", CHAT_TIMEOUT)
+            return (
+                ":warning: 응답 시간이 초과되었습니다. "
+                "질문을 더 구체적으로 해주세요."
+            )
 
         if proc.returncode != 0:
             logger.error(
                 "Claude CLI 실패 (exit %d)\nstdout: %s\nstderr: %s",
                 proc.returncode,
-                stdout.decode(),
-                stderr.decode(),
+                stdout.decode(errors="replace"),
+                stderr.decode(errors="replace"),
             )
             return ":warning: 질문 처리 중 오류가 발생했습니다. 로그를 확인해주세요."
 
-        output = stdout.decode().strip()
+        output = stdout.decode(errors="replace").strip()
         # 마크다운 테이블 → 코드 블록 변환 (Slack 호환)
         output = _convert_md_tables_to_code_blocks(output)
         return output
