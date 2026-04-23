@@ -1,6 +1,6 @@
 ---
 name: resolve-reviews
-description: "이슈 번호로 관련 PR의 리뷰 코멘트를 확인하고, 수정이 필요하면 코드를 수정한 뒤 코멘트에 답변+resolve 처리한다."
+description: "이슈 번호로 관련 PR의 리뷰 코멘트를 확인하고, 충돌이 있으면 rebase로 해결하고, 수정이 필요하면 코드를 수정한 뒤 코멘트에 답변+resolve 처리한다."
 ---
 
 # Resolve Reviews — PR 리뷰 코멘트 처리
@@ -28,6 +28,19 @@ GraphQL로 미해결 review thread를 조회한다.
 | **FIX** | 코드 수정이 필요 | 코드 수정 → 답변 → resolve |
 | **ACK** | 타당하지만 범위 밖 | 답변만 → resolve |
 | **SKIP** | 이미 수정됨 | 답변만 → resolve |
+
+### Phase 3.5: 충돌 해결
+PR이 `CONFLICTING` 상태이면 코드 수정 전에 먼저 충돌을 해결한다.
+```bash
+# PR 브랜치의 워크트리로 이동
+cd {worktree_path}
+git fetch origin main
+git stash  # 미커밋 변경이 있으면
+git rebase origin/main
+# 충돌 파일 수동 해결 → git add → git rebase --continue
+# uv.lock 충돌 시: git checkout --theirs uv.lock && uv lock
+```
+충돌 해결 후 FIX 항목 수정을 진행한다.
 
 ### Phase 4: 코드 수정 (FIX 항목)
 수정 후 테스트/린트 통과 확인 → 커밋 & push
