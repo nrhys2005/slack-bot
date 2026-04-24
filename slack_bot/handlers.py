@@ -10,11 +10,18 @@ from slack_bot.chat import answer_question
 from slack_bot.config import load_projects
 from slack_bot.db_query import run_db_query
 from slack_bot.runner import run_claude
+from slack_bot.security import (
+    RateLimiter,
+    check_auth,
+    log_command,
+    redact_output,
+)
 from slack_bot.task_manager import TaskManager
 
 logger = logging.getLogger(__name__)
 
-MAX_CONCURRENT_CLAUDE = 5
+MAX_CONCURRENT_CHAT = 3
+MAX_CONCURRENT_TASK = 3
 
 
 def _log_task_exception(t: asyncio.Task) -> None:
@@ -26,11 +33,24 @@ def _log_task_exception(t: asyncio.Task) -> None:
         logger.error("백그라운드 태스크 예외: %s", exc, exc_info=exc)
 
 
+_AUTH_DENIED = ":lock: 이 명령어를 사용할 권한이 없습니다."
+_RATE_LIMITED = ":hourglass: 요청이 너무 많습니다. 잠시 후 다시 시도해주세요."
+
+
 def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
-    _claude_semaphore = asyncio.Semaphore(MAX_CONCURRENT_CLAUDE)
+    _chat_semaphore = asyncio.Semaphore(MAX_CONCURRENT_CHAT)
+    _task_semaphore = asyncio.Semaphore(MAX_CONCURRENT_TASK)
     _background_tasks: set[asyncio.Task] = set()
 
-    projects = load_projects()
+    # Rate limiters
+    _task_limiter = RateLimiter(max_calls=3, window_seconds=600)    # /dev, /claude
+    _db_limiter = RateLimiter(max_calls=5, window_seconds=300)      # /db
+    _chat_limiter = RateLimiter(max_calls=10, window_seconds=300)   # @mention
+
+    app_config = load_projects()
+    projects = app_config.projects
+    security = app_config.security
+
     wiki_project = next((p for p in projects.values() if p.wiki), None)
     wiki_path = wiki_project.path if wiki_project else None
     db_backend_project = next((p for p in projects.values() if p.db_backend), None)
@@ -50,7 +70,21 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
         """
         await ack()
 
+        user_id = command.get("user_id", "")
+        user_name = command.get("user_name", "unknown")
+        channel = command["channel_id"]
         text = (command.get("text") or "").strip()
+
+        # 감사 로그 + 인증 + rate limit
+        authorized = check_auth(user_id, "dev", security.allowed_users)
+        log_command(user_id, user_name, channel, "/dev", text, authorized)
+        if not authorized:
+            await respond(_AUTH_DENIED)
+            return
+        if not _task_limiter.check(user_id):
+            await respond(_RATE_LIMITED)
+            return
+
         parts = text.split(None, 1)
 
         if len(parts) < 2:
@@ -86,8 +120,7 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
 
         # 태스크 정리 & 생성
         task_manager.cleanup_old()
-        user = command.get("user_name", "unknown")
-        channel = command["channel_id"]
+        user = user_name
         task = await task_manager.create_task(
             project_name, "harness", args, user, channel
         )
@@ -108,7 +141,7 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
                 task,
                 prompt_display,
                 slash_command,
-                _claude_semaphore,
+                _task_semaphore,
             )
         )
         _background_tasks.add(bg_task)
@@ -126,7 +159,21 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
         """
         await ack()
 
+        user_id = command.get("user_id", "")
+        user_name = command.get("user_name", "unknown")
+        channel = command["channel_id"]
         text = (command.get("text") or "").strip()
+
+        # 감사 로그 + 인증 + rate limit
+        authorized = check_auth(user_id, "admin", security.allowed_users)
+        log_command(user_id, user_name, channel, "/claude", text, authorized)
+        if not authorized:
+            await respond(_AUTH_DENIED)
+            return
+        if not _task_limiter.check(user_id):
+            await respond(_RATE_LIMITED)
+            return
+
         parts = text.split(None, 2)
 
         # 입력 검증: 프로젝트명 + 명령어 최소 필요
@@ -161,8 +208,7 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
 
         # 태스크 정리 & 생성
         task_manager.cleanup_old()
-        user = command.get("user_name", "unknown")
-        channel = command["channel_id"]
+        user = user_name
         task = await task_manager.create_task(project_name, cmd, args, user, channel)
         prompt_display = f"/{cmd} {args}".strip()
 
@@ -181,7 +227,7 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
                 task,
                 prompt_display,
                 slash_command,
-                _claude_semaphore,
+                _task_semaphore,
             )
         )
         _background_tasks.add(bg_task)
@@ -204,7 +250,19 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
     async def handle_stop_command(ack, command, respond):
         """/stop <task_id> — 실행 중인 태스크 중단"""
         await ack()
+
+        user_id = command.get("user_id", "")
+        user_name = command.get("user_name", "unknown")
+        channel = command["channel_id"]
         task_id = (command.get("text") or "").strip()
+
+        # 목록 조회는 누구나, 실행 중단은 admin만
+        if task_id:
+            authorized = check_auth(user_id, "admin", security.allowed_users)
+            log_command(user_id, user_name, channel, "/stop", task_id, authorized)
+            if not authorized:
+                await respond(_AUTH_DENIED)
+                return
 
         if not task_id:
             running = task_manager.get_running_tasks()
@@ -238,7 +296,20 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
         """
         await ack()
 
+        user_id = command.get("user_id", "")
+        user_name = command.get("user_name", "unknown")
+        channel = command["channel_id"]
         question = (command.get("text") or "").strip()
+
+        # 감사 로그 + 인증 + rate limit
+        authorized = check_auth(user_id, "db", security.allowed_users)
+        log_command(user_id, user_name, channel, "/db", question, authorized)
+        if not authorized:
+            await respond(_AUTH_DENIED)
+            return
+        if not _db_limiter.check(user_id):
+            await respond(_RATE_LIMITED)
+            return
 
         if not question:
             await respond(
@@ -256,8 +327,7 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
             return
 
         task_manager.cleanup_old()
-        user = command.get("user_name", "unknown")
-        channel = command["channel_id"]
+        user = user_name
         slash_command = f"/db {question}"
 
         await respond(f":mag: `{question}` 조회 중...")
@@ -271,7 +341,7 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
                 db_backend_path=db_backend_path,
                 wiki_path=wiki_path,
                 slash_command=slash_command,
-                semaphore=_claude_semaphore,
+                semaphore=_chat_semaphore,
             )
         )
         _background_tasks.add(bg_task)
@@ -286,6 +356,18 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
         question = re.sub(r"<@[A-Z0-9]+>", "", raw_text).strip()
 
         thread_ts = event.get("thread_ts") or event["ts"]
+        user_id = event.get("user", "")
+        channel = event["channel"]
+
+        # 감사 로그 + 인증 + rate limit
+        authorized = check_auth(user_id, "chat", security.allowed_users)
+        log_command(user_id, "", channel, "@mention", question[:80], authorized)
+        if not authorized:
+            await say(_AUTH_DENIED, thread_ts=thread_ts)
+            return
+        if not _chat_limiter.check(user_id):
+            await say(_RATE_LIMITED, thread_ts=thread_ts)
+            return
 
         if not question:
             await say(
@@ -293,8 +375,6 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
                 thread_ts=thread_ts,
             )
             return
-
-        channel = event["channel"]
 
         # 즉시 리액션으로 "읽었다" 신호
         try:
@@ -313,7 +393,7 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
                 result = await client.conversations_replies(
                     channel=channel,
                     ts=event["thread_ts"],
-                    limit=100,
+                    limit=20,
                 )
                 messages = result.get("messages", [])
                 # 현재 메시지 제외, 최근 20개만 유지
@@ -326,7 +406,7 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
 
         # 위키 검색 + DB 조회 + 태스크 컨텍스트 포함
         try:
-            async with _claude_semaphore:
+            async with _chat_semaphore:
                 answer = await answer_question(
                     question,
                     tasks,
@@ -337,6 +417,106 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
         except Exception:
             logger.exception("질문 답변 처리 중 에러")
             answer = ":warning: 질문 처리 중 오류가 발생했습니다."
+
+        # 출력 마스킹
+        answer, was_redacted = redact_output(answer)
+        if was_redacted:
+            answer += "\n\n:lock: 일부 민감 정보가 보안 정책에 의해 마스킹되었습니다."
+
+        # 리액션 제거
+        try:
+            await client.reactions_remove(
+                channel=channel, timestamp=event["ts"], name="eyes"
+            )
+        except Exception:
+            logger.warning("리액션 제거 실패", exc_info=True)
+
+        await say(
+            answer,
+            thread_ts=thread_ts,
+        )
+
+    @app.event("message")
+    async def handle_dm(event, say, client):
+        """1:1 DM 메시지 처리. @멘션과 동일하게 동작."""
+        # DM(im)만 처리, 채널 메시지는 무시
+        if event.get("channel_type") != "im":
+            return
+        # 봇 자신의 메시지, 서브타입(join/leave 등) 무시
+        if event.get("bot_id") or event.get("subtype"):
+            return
+
+        raw_text = event.get("text", "")
+        # @멘션 부분이 있으면 제거
+        question = re.sub(r"<@[A-Z0-9]+>", "", raw_text).strip()
+
+        thread_ts = event.get("thread_ts") or event["ts"]
+        user_id = event.get("user", "")
+        channel = event["channel"]
+
+        # 감사 로그 + 인증 + rate limit
+        authorized = check_auth(user_id, "chat", security.allowed_users)
+        log_command(user_id, "", channel, "dm", question[:80], authorized)
+        if not authorized:
+            await say(_AUTH_DENIED, thread_ts=thread_ts)
+            return
+        if not _chat_limiter.check(user_id):
+            await say(_RATE_LIMITED, thread_ts=thread_ts)
+            return
+
+        if not question:
+            return
+
+        # 즉시 리액션
+        try:
+            await client.reactions_add(
+                channel=channel, timestamp=event["ts"], name="eyes"
+            )
+        except Exception:
+            logger.warning("리액션 추가 실패", exc_info=True)
+
+        tasks = task_manager.get_tasks_for_channel(channel)
+
+        # 대화 이력 조회
+        thread_history: list[dict] = []
+        try:
+            if event.get("thread_ts"):
+                # 스레드 내 메시지
+                result = await client.conversations_replies(
+                    channel=channel,
+                    ts=event["thread_ts"],
+                    limit=20,
+                )
+            else:
+                # 최상위 메시지 — DM 채널의 최근 대화
+                result = await client.conversations_history(
+                    channel=channel,
+                    limit=20,
+                )
+            messages = result.get("messages", [])
+            thread_history = [m for m in messages if m["ts"] != event["ts"]][-20:]
+        except Exception:
+            logger.warning("DM 이력 조회 실패", exc_info=True)
+
+        task_manager.cleanup_old()
+
+        try:
+            async with _chat_semaphore:
+                answer = await answer_question(
+                    question,
+                    tasks,
+                    thread_history,
+                    wiki_project_path=wiki_path,
+                    db_backend_path=db_backend_path,
+                )
+        except Exception:
+            logger.exception("DM 답변 처리 중 에러")
+            answer = ":warning: 질문 처리 중 오류가 발생했습니다."
+
+        # 출력 마스킹
+        answer, was_redacted = redact_output(answer)
+        if was_redacted:
+            answer += "\n\n:lock: 일부 민감 정보가 보안 정책에 의해 마스킹되었습니다."
 
         # 리액션 제거
         try:
@@ -369,6 +549,13 @@ async def _run_and_report(
         status = "완료" if result.success else "실패"
         emoji = ":white_check_mark:" if result.success else ":x:"
 
+        # 출력 마스킹
+        output = result.output
+        if output:
+            output, was_redacted = redact_output(output)
+            if was_redacted:
+                output += "\n\n:lock: 일부 민감 정보가 보안 정책에 의해 마스킹되었습니다."
+
         blocks = [
             {
                 "type": "section",
@@ -386,8 +573,8 @@ async def _run_and_report(
                 "type": "section",
                 "text": {
                     "type": "mrkdwn",
-                    "text": f"```\n{result.output}\n```"
-                    if result.output
+                    "text": f"```\n{output}\n```"
+                    if output
                     else "_출력 없음_",
                 },
             },
@@ -422,6 +609,11 @@ async def _run_db_query_and_report(
     try:
         async with semaphore:
             answer = await run_db_query(question, db_backend_path, wiki_path)
+        # 출력 마스킹
+        if answer:
+            answer, was_redacted = redact_output(answer)
+            if was_redacted:
+                answer += "\n\n:lock: 일부 민감 정보가 보안 정책에 의해 마스킹되었습니다."
         blocks = [
             {
                 "type": "section",

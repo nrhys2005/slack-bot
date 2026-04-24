@@ -16,7 +16,18 @@ class ProjectConfig:
     db_backend: bool = False
 
 
-def load_projects(config_path: str | None = None) -> dict[str, ProjectConfig]:
+@dataclass
+class SecurityConfig:
+    allowed_users: dict[str, list[str]] = field(default_factory=dict)
+
+
+@dataclass
+class AppConfig:
+    projects: dict[str, ProjectConfig]
+    security: SecurityConfig
+
+
+def load_projects(config_path: str | None = None) -> AppConfig:
     if config_path is None:
         config_path = os.environ.get(
             "PROJECTS_CONFIG",
@@ -35,4 +46,10 @@ def load_projects(config_path: str | None = None) -> dict[str, ProjectConfig]:
             wiki=cfg.get("wiki", False),
             db_backend=cfg.get("db_backend", False),
         )
-    return projects
+
+    security_raw = raw.get("security", {})
+    security = SecurityConfig(
+        allowed_users=security_raw.get("allowed_users", {}),
+    )
+
+    return AppConfig(projects=projects, security=security)
