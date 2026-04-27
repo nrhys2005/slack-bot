@@ -13,6 +13,16 @@ logger = logging.getLogger(__name__)
 MAX_OUTPUT_LENGTH = 3900  # Slack 메시지 제한 (~4000) 여유분 확보
 SUBPROCESS_TIMEOUT = 3600  # 1시간. harness 파이프라인은 오래 걸릴 수 있음
 
+_BASE_TOOLS = ["Edit", "Write", "Bash", "Glob", "Grep", "Read", "Agent"]
+
+
+def _build_allowed_tools(project: ProjectConfig) -> str:
+    """프로젝트 설정에 따라 --allowedTools 문자열을 동적으로 구성."""
+    tools = list(_BASE_TOOLS)
+    for pattern in project.mcp_tools:
+        tools.append(f"mcp__mcp-server__{pattern}")
+    return ",".join(tools)
+
 
 @dataclass
 class RunResult:
@@ -47,7 +57,7 @@ async def run_claude(
         "--permission-mode",
         "bypassPermissions",
         "--allowedTools",
-        "Edit,Write,Bash,Glob,Grep,Read,Agent,mcp__mcp-server__jira_*,mcp__mcp-server__linear_*,mcp__mcp-server__notion_*,mcp__mcp-server__slack_*",
+        _build_allowed_tools(project),
     ]
 
     proc = await asyncio.create_subprocess_exec(

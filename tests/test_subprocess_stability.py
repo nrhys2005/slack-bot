@@ -262,18 +262,28 @@ async def test_answer_question_success():
 # db_query.py 테스트
 # ---------------------------------------------------------------------------
 
-_FAKE_DB_ENV = {
-    "POSTGRESQL_RA_USERNAME": "u",
-    "POSTGRESQL_RA_PASSWORD": "p",
-    "POSTGRESQL_RA_READ_HOST": "h",
-    "POSTGRESQL_RA_PORT": "5432",
-    "POSTGRESQL_RA_DB_NAME": "db",
-    "POSTGRESQL_CORE_USERNAME": "u",
-    "POSTGRESQL_CORE_PASSWORD": "p",
-    "POSTGRESQL_CORE_READ_HOST": "h",
-    "POSTGRESQL_CORE_PORT": "5432",
-    "POSTGRESQL_CORE_DB_NAME": "db",
+_FAKE_DB_ENVS = {
+    "ra": {
+        "username": "u",
+        "password": "p",
+        "read_host": "h",
+        "port": "5432",
+        "db_name": "db",
+    },
 }
+
+
+def _make_fake_db_project():
+    from slack_bot.config import DBConfig, ProjectConfig
+    return ProjectConfig(
+        name="test-db",
+        path="/tmp/db",
+        db=DBConfig(
+            env_file="app/.env",
+            env_prefix={"ra": "POSTGRESQL_RA"},
+            model_paths=["app/models/ra"],
+        ),
+    )
 
 
 @pytest.mark.asyncio
@@ -298,7 +308,7 @@ async def test_run_db_query_timeout():
         raise asyncio.TimeoutError()
 
     with (
-        patch("slack_bot.db_query._load_db_env", return_value=_FAKE_DB_ENV),
+        patch("slack_bot.db_query._load_db_env", return_value=_FAKE_DB_ENVS),
         patch("slack_bot.db_query._build_system_prompt", return_value="fake prompt"),
         patch("slack_bot.db_query.asyncio") as mock_asyncio,
     ):
@@ -307,7 +317,7 @@ async def test_run_db_query_timeout():
         mock_asyncio.TimeoutError = asyncio.TimeoutError
         mock_asyncio.wait_for = fake_wait_for
 
-        result = await run_db_query("test question", "/tmp/db")
+        result = await run_db_query("test question", _make_fake_db_project())
 
     assert "초과" in result
     proc.kill.assert_called_once()
@@ -324,7 +334,7 @@ async def test_run_db_query_assert_replaced():
     proc.returncode = None
 
     with (
-        patch("slack_bot.db_query._load_db_env", return_value=_FAKE_DB_ENV),
+        patch("slack_bot.db_query._load_db_env", return_value=_FAKE_DB_ENVS),
         patch("slack_bot.db_query._build_system_prompt", return_value="fake prompt"),
         patch("slack_bot.db_query.asyncio") as mock_asyncio,
     ):
@@ -332,5 +342,5 @@ async def test_run_db_query_assert_replaced():
         mock_asyncio.subprocess = asyncio.subprocess
 
         # RuntimeError -> except Exception -> :warning: 메시지
-        result = await run_db_query("test", "/tmp/db")
+        result = await run_db_query("test", _make_fake_db_project())
         assert ":warning:" in result
