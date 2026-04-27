@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from dataclasses import dataclass
 
 from slack_bot.config import ProjectConfig
+from slack_bot.security import make_safe_env
 from slack_bot.task_manager import TaskInfo
 
 logger = logging.getLogger(__name__)
@@ -36,9 +36,8 @@ async def run_claude(
 
     prompt = f"/{command} {args}"
 
-    # ANTHROPIC_API_KEY를 제거하여 Claude Code OAuth 인증 사용
-    # Slack은 비대화형이므로 항상 --allowedTools 적용
-    env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
+    # 환경변수 화이트리스트 적용 (SLACK_BOT_TOKEN 등 시크릿 노출 방지)
+    env = make_safe_env()
     cmd = [
         "claude",
         "-p",
@@ -48,7 +47,7 @@ async def run_claude(
         "--permission-mode",
         "bypassPermissions",
         "--allowedTools",
-        "Edit,Write,Bash,Glob,Grep,Read,Agent,mcp__*",
+        "Edit,Write,Bash,Glob,Grep,Read,Agent,mcp__mcp-server__jira_*,mcp__mcp-server__linear_*,mcp__mcp-server__notion_*,mcp__mcp-server__slack_*",
     ]
 
     proc = await asyncio.create_subprocess_exec(

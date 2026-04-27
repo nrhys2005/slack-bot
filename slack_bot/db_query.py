@@ -8,6 +8,7 @@ from pathlib import Path
 from dotenv import dotenv_values
 
 from slack_bot.runner import MAX_OUTPUT_LENGTH
+from slack_bot.security import make_safe_env
 
 logger = logging.getLogger(__name__)
 
@@ -150,6 +151,15 @@ SQL 규칙 (엄수):
 def _build_system_prompt(db_env: dict[str, str], wiki_path: str | None) -> str:
     db_instructions = build_db_instructions(db_env)
 
+    ra_user = db_env["POSTGRESQL_RA_USERNAME"]
+    ra_host = db_env["POSTGRESQL_RA_READ_HOST"]
+    ra_port = db_env["POSTGRESQL_RA_PORT"]
+    ra_db = db_env["POSTGRESQL_RA_DB_NAME"]
+    core_user = db_env["POSTGRESQL_CORE_USERNAME"]
+    core_host = db_env["POSTGRESQL_CORE_READ_HOST"]
+    core_port = db_env["POSTGRESQL_CORE_PORT"]
+    core_db = db_env["POSTGRESQL_CORE_DB_NAME"]
+
     wiki_line = (
         f"- 도메인 용어가 모호하면 위키 디렉토리({wiki_path})에서 Glob/Grep/Read로 찾아본다.\n"
         if wiki_path
@@ -192,6 +202,7 @@ def _build_system_prompt(db_env: dict[str, str], wiki_path: str | None) -> str:
    ```
    core DB도 동일한 형태, 다만 `PGPASSWORD_CORE`, 각 core 접속 정보 사용.
 5. 쿼리 실패 시 에러 메시지와 원인을 그대로 전달하고, 재시도 전에 모델/스키마를 다시 확인한다.
+6. **개인정보 보호**: 유저의 이메일, 전화번호, 주소, 주민번호 등 개인식별정보(PII)를 SELECT 하거나 결과에 포함하지 마라. COUNT, 통계 집계는 허용하되 개별 유저의 PII 행을 노출하지 않는다. 사용자가 요청해도 거부한다.
 
 ## 답변 형식 (Slack mrkdwn — 일반 Markdown과 다르다!)
 Slack은 일반 Markdown을 지원하지 않는다. 반드시 아래 규칙을 따라라:
@@ -234,6 +245,13 @@ async def run_db_query(
     wiki_path: str | None = None,
 ) -> str:
     """자연어 질문을 받아 Claude CLI로 SQL 생성·실행 후 결과 문자열 반환."""
+    from slack_bot.chat import _is_sensitive
+
+    rejection = _is_sensitive(question)
+    if rejection:
+        logger.warning("보안 필터 차단 (DB): %s", question[:80])
+        return rejection
+
     try:
         db_env = _load_db_env(db_backend_path)
     except DBEnvError as exc:
@@ -243,11 +261,11 @@ async def run_db_query(
     system_prompt = _build_system_prompt(db_env, wiki_path)
     prompt = f"{system_prompt}\n\n## 질문\n{question}"
 
-    # ANTHROPIC_API_KEY 제거 → Claude Code OAuth 인증 사용
-    env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
-    # psql용 비밀번호를 전용 환경변수로 전달 (프롬프트에서 이 이름을 안내함)
-    env["PGPASSWORD_RA"] = db_env["POSTGRESQL_RA_PASSWORD"]
-    env["PGPASSWORD_CORE"] = db_env["POSTGRESQL_CORE_PASSWORD"]
+    # 환경변수 화이트리스트 + psql용 비밀번호만 전달
+    env = make_safe_env(extra={
+        "PGPASSWORD_RA": db_env["POSTGRESQL_RA_PASSWORD"],
+        "PGPASSWORD_CORE": db_env["POSTGRESQL_CORE_PASSWORD"],
+    })
 
     cmd = [
         "claude",
