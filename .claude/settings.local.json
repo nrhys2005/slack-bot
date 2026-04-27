@@ -16,7 +16,14 @@
       "mcp__mcp-server__jira_get_issue",
       "mcp__mcp-server__jira_search_issues",
       "mcp__mcp-server__jira_add_comment",
-      "mcp__mcp-server__jira_update_issue"
+      "mcp__mcp-server__jira_update_issue",
+      "Bash(sort -k4 -n -r)",
+      "Bash(grep -iE '\\\\.\\(env|key|pem|crt|cert|secret|credential|token|password|p12|pfx|jks|pyc|DS_Store\\)$|__pycache__|node_modules|\\\\.idea/|\\\\.vscode/')",
+      "Bash(grep:*)",
+      "Bash(uv add:*)",
+      "Bash(uv pip:*)",
+      "Bash(uv lock:*)",
+      "Read(//Users/rsquare/git/ra-ai/slack-bot/**)"
     ]
   }
 }

@@ -206,3 +206,5 @@ projects.yaml
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+.claude/worktrees/
