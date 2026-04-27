@@ -47,7 +47,7 @@ def make_safe_env(extra: dict[str, str] | None = None) -> dict[str, str]:
 
 _REDACT_PATTERNS: list[tuple[re.Pattern, str]] = [
     # Slack 토큰 (xoxb-, xoxp-, xoxa-, xoxs-, xapp-)
-    (re.compile(r"(?:xox[bpsa]|xapp)-[0-9A-Za-z\-]+"), "***SLACK_TOKEN_REDACTED***"),
+    (re.compile(r"(?:xox[a-zA-Z]|xapp)-[0-9A-Za-z\-]+"), "***SLACK_TOKEN_REDACTED***"),
     # AWS Access Key
     (re.compile(r"AKIA[0-9A-Z]{16}"), "***AWS_KEY_REDACTED***"),
     # JWT 토큰
@@ -61,8 +61,8 @@ _REDACT_PATTERNS: list[tuple[re.Pattern, str]] = [
     # key=value 형태의 시크릿 (password=xxx, secret=xxx 등)
     (re.compile(
         r"(?i)(password|passwd|secret|token|api[_-]?key|auth[_-]?token|"
-        r"access[_-]?key|private[_-]?key)\s*[=:]\s*\S+"
-    ), r"\1=***REDACTED***"),
+        r"access[_-]?key|private[_-]?key)(\s*[=:]\s*)\S+"
+    ), r"\1\2***REDACTED***"),
 ]
 
 
@@ -107,8 +107,13 @@ class RateLimiter:
         """허용이면 True, rate limit 초과면 False."""
         now = time.time()
         calls = self._calls[user_id]
-        self._calls[user_id] = [t for t in calls if now - t < self._window]
-        if len(self._calls[user_id]) >= self._max:
+        active = [t for t in calls if now - t < self._window]
+        if not active:
+            # 윈도우 내 호출이 없으면 키 자체를 삭제해 메모리 누수 방지
+            self._calls.pop(user_id, None)
+        else:
+            self._calls[user_id] = active
+        if len(active) >= self._max:
             return False
         self._calls[user_id].append(now)
         return True

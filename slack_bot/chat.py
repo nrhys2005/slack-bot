@@ -83,7 +83,7 @@ def _is_sensitive(question: str) -> str | None:
 
 def _needs_db(question: str) -> bool:
     """질문에 DB 관련 키워드가 포함되어 있는지 판별."""
-    return any(kw in question for kw in _DB_KEYWORDS)
+    return any(kw.lower() in question.lower() for kw in _DB_KEYWORDS)
 
 
 def _is_status_query(question: str, tasks: list[TaskInfo]) -> bool:

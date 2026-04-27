@@ -494,6 +494,8 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
                     limit=20,
                 )
             messages = result.get("messages", [])
+            if not event.get("thread_ts"):
+                messages.reverse()
             thread_history = [m for m in messages if m["ts"] != event["ts"]][-20:]
         except Exception:
             logger.warning("DM 이력 조회 실패", exc_info=True)
