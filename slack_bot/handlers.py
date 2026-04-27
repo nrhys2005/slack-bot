@@ -176,7 +176,7 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
         # 확인 메시지 (Block Kit + 버튼)
         prompt_display = f"/{intent.command} {intent.args}".strip()
         # Block Kit value 필드는 2000자 제한 — args를 truncate
-        safe_args = intent.args[:500] if len(intent.args) > 500 else intent.args
+        safe_args = intent.args[:1500] if len(intent.args) > 1500 else intent.args
         action_data = json.dumps({
             "project": intent.project,
             "command": intent.command,

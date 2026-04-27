@@ -164,7 +164,7 @@ def _detect_project(
     for name, cfg in projects.items():
         if cfg.description:
             clean_desc = re.sub(r"[()（）\[\]「」]", " ", cfg.description)
-            desc_words = [w for w in clean_desc.split() if len(w) >= 3]
+            desc_words = [w for w in clean_desc.split() if len(w) >= 2]
             for word in desc_words:
                 if word.lower() in lower:
                     return name
@@ -226,7 +226,7 @@ def _extract_remaining_args(
 
     # 액션 키워드 제거 ("돌려줘", "실행해줘", "해줘" 등)
     remaining = re.sub(
-        r"(돌려줘|실행해줘|실행해|해줘|해 줘|시작해|시작해줘|부탁해|좀)", "",
+        r"(돌려줘|실행해줘|실행해|해줘|해 줘|시작해|시작해줘|부탁해|좀)$", "",
         remaining,
     )
 
