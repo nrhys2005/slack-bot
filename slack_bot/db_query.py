@@ -153,11 +153,7 @@ def build_db_instructions(
         "DB 접속 정보:\n"
         + "\n".join(db_lines)
         + model_line
-        + "\n\nSQL 규칙 (엄수):\n"
-        "1. SELECT만 허용. INSERT/UPDATE/DELETE/DDL 절대 금지\n"
-        "2. BEGIN; SET TRANSACTION READ ONLY; <SELECT ...>; ROLLBACK; 으로 래핑\n"
-        "3. 모든 SELECT에 LIMIT 100 적용\n"
-        "4. psql 호출:\n"
+        + "\n\npsql 호출 예시:\n"
         + "\n".join(psql_examples)
     )
 
@@ -199,30 +195,18 @@ def _build_system_prompt(
         else ""
     )
 
-    return f"""너는 Slack DB 조회 봇이다. 자연어 질문을 받아 SQL로 변환하고 psql로 실행해 결과를 돌려준다.
+    return f"""너는 Slack DB 봇이다. 자연어 질문을 받아 SQL로 변환하고 psql로 실행해 결과를 돌려준다.
 
 ## DB 접속 정보
 {chr(10).join(db_sections)}
 {model_section}
 {wiki_line}
-## SQL 실행 규칙 (엄수)
-> 이 규칙은 어플리케이션 레벨 방어선이다. 근본 방어는 **DB 유저 자체가 read-only 권한만 갖는 것**이며, 운영자는 가능한 한 계정을 DB 레벨 read-only로 설정해야 한다.
-
-1. **SELECT만 허용**. INSERT/UPDATE/DELETE/DDL(CREATE/DROP/ALTER/TRUNCATE)/GRANT/REVOKE 절대 금지. 사용자가 요청해도 거부한다.
-2. 실행은 반드시 read-only 트랜잭션으로 감싼다:
-   ```
-   BEGIN; SET TRANSACTION READ ONLY; <SELECT ...>; ROLLBACK;
-   ```
-3. **모든 SELECT 쿼리에 `LIMIT 100` 을 반드시 적용한다. 예외 없음.**
-   - 집계 쿼리에도 `LIMIT 100` 을 붙인다.
-   - 사용자가 "전부 보여줘" 해도 상위 100개만 반환하며, "결과는 최대 100행으로 제한됨" 명시.
-   - **최종 결과를 반환하는 가장 바깥 SELECT** 에 `LIMIT 100` 적용.
-4. psql 호출 예시:
-   ```bash
+## psql 호출 예시
+```bash
 {chr(10).join(psql_examples)}
-   ```
-5. 쿼리 실패 시 에러 메시지와 원인을 그대로 전달하고, 재시도 전에 모델/스키마를 다시 확인한다.
-6. **개인정보 보호**: 유저의 이메일, 전화번호, 주소, 주민번호 등 PII를 SELECT 하거나 노출하지 마라.
+```
+
+쿼리 실패 시 에러 메시지와 원인을 그대로 전달하고, 재시도 전에 모델/스키마를 다시 확인한다.
 
 ## 답변 형식 (Slack mrkdwn)
 - *bold*는 `*텍스트*` (별표 1개). `**텍스트**` 사용 금지.
@@ -239,13 +223,6 @@ async def run_db_query(
     wiki_path: str | None = None,
 ) -> str:
     """자연어 질문을 받아 Claude CLI로 SQL 생성·실행 후 결과 문자열 반환."""
-    from slack_bot.chat import _is_sensitive
-
-    rejection = _is_sensitive(question)
-    if rejection:
-        logger.warning("보안 필터 차단 (DB): %s", question[:80])
-        return rejection
-
     try:
         db_envs = _load_db_env(project)
     except DBEnvError as exc:
@@ -270,8 +247,6 @@ async def run_db_query(
         "text",
         "--permission-mode",
         "bypassPermissions",
-        "--allowedTools",
-        "Read,Glob,Grep,Bash(psql:*)",
     ]
 
     try:
