@@ -1,4 +1,4 @@
-"""SB-PROC-03: handler 안정성 강화 테스트."""
+"""handler 안정성 테스트."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from slack_bot.handlers import MAX_CONCURRENT_CLAUDE, _log_task_exception
+from slack_bot.handlers import _log_task_exception
 
 
 class TestLogTaskException:
@@ -45,13 +45,6 @@ class TestLogTaskException:
         assert len(caplog.records) == 1
         assert "백그라운드 태스크 예외" in caplog.records[0].message
         assert "test error" in caplog.records[0].message
-
-
-class TestMaxConcurrentClaude:
-    """MAX_CONCURRENT_CLAUDE 상수 테스트."""
-
-    def test_value_is_5(self):
-        assert MAX_CONCURRENT_CLAUDE == 5
 
 
 class TestSemaphoreBehavior:
@@ -126,7 +119,6 @@ class TestRunAndReportSemaphore:
             new_callable=AsyncMock,
             return_value=mock_result,
         ):
-            # semaphore 상태 확인: 실행 전 1, 실행 중 0, 실행 후 1
             assert sem._value == 1
             await _run_and_report(
                 app,
@@ -134,10 +126,9 @@ class TestRunAndReportSemaphore:
                 project,
                 task,
                 "/harness TEST-1",
-                "/dev test TEST-1",
                 sem,
             )
-            assert sem._value == 1  # 해제 후 복원됨
+            assert sem._value == 1
 
         task_manager.complete_task.assert_called_once_with("001", True)
 
@@ -153,6 +144,8 @@ class TestRunDbQueryAndReportSemaphore:
         app = MagicMock()
         app.client.chat_postMessage = AsyncMock()
 
+        db_project = MagicMock()
+
         with patch(
             "slack_bot.handlers.run_db_query",
             new_callable=AsyncMock,
@@ -163,10 +156,10 @@ class TestRunDbQueryAndReportSemaphore:
                 app,
                 question="테스트",
                 channel="C123",
-                user="user1",
-                db_backend_path="/tmp/db",
+                thread_ts="1234.5678",
+                user_id="U123",
+                db_project=db_project,
                 wiki_path=None,
-                slash_command="/db 테스트",
                 semaphore=sem,
             )
             assert sem._value == 1
