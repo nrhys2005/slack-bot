@@ -21,64 +21,6 @@ CHAT_TIMEOUT = 300  # 5분
 
 _STATUS_KEYWORDS = frozenset({"어디까지", "진행", "상태", "멈", "끝났"})
 
-# 보안: 서버/인프라/자격증명 관련 질문 차단 키워드
-_SENSITIVE_KEYWORDS = frozenset({
-    # 자격증명·인증
-    "비밀번호", "패스워드", "password", "비번", "토큰", "token", "secret",
-    "시크릿", "credential", "자격증명", "api key", "apikey", "api_key",
-    "접속정보", "접속 정보", "인증키", "auth",
-    # 환경변수·설정파일
-    ".env", "환경변수", "env var",
-    # 서버·인프라
-    "서버 스펙", "서버스펙", "서버 정보", "서버정보", "서버 사양",
-    "IP 주소", "ip주소", "IP주소", "ip 주소",
-    "hostname", "호스트네임", "호스트명",
-    "SSH", "ssh", "RDP", "rdp", "원격접속", "원격 접속",
-    # PC·장비 정보
-    "PC 정보", "PC정보", "pc정보", "컴퓨터 정보", "컴퓨터정보",
-    "윈도우 정보", "윈도우정보", "MAC 주소", "mac주소", "mac 주소",
-    # DB 접속 자격증명 (DB 조회 자체는 허용하되 접속정보 노출은 차단)
-    "DB 비밀번호", "DB 패스워드", "DB 계정", "DB 접속",
-    "POSTGRESQL_", "PGPASSWORD",
-    # 개인정보·유저정보 유출 방지
-    "유저 이메일", "유저 메일", "사용자 이메일", "사용자 메일",
-    "유저 전화번호", "유저 핸드폰", "유저 휴대폰", "유저 연락처",
-    "사용자 전화번호", "사용자 핸드폰", "사용자 휴대폰", "사용자 연락처",
-    "회원 이메일", "회원 전화번호", "회원 연락처", "회원 핸드폰",
-    "이메일 목록", "이메일 리스트", "메일 목록", "메일 리스트",
-    "전화번호 목록", "전화번호 리스트", "연락처 목록", "연락처 리스트",
-    "개인정보", "개인 정보",
-})
-
-# 개인정보 조회 차단용 (DB 쿼리 결과에 PII 컬럼이 포함되는 것을 방지)
-_PII_QUERY_KEYWORDS = frozenset({
-    "이메일", "email", "e-mail",
-    "전화번호", "핸드폰", "휴대폰", "연락처", "phone",
-    "주민번호", "주민등록번호",
-    "계좌번호", "카드번호",
-    "주소 알려", "집주소", "자택",
-})
-
-SENSITIVE_REJECTION = (
-    ":lock: 보안 정책상 서버 환경, 접속 정보, 자격증명 관련 질문에는 답변할 수 없습니다.\n"
-    "필요하시면 인프라 담당자에게 직접 문의해주세요."
-)
-
-PII_REJECTION = (
-    ":lock: 보안 정책상 유저 개인정보(이메일, 전화번호, 주소 등)를 조회하거나 노출할 수 없습니다.\n"
-    "개인정보가 필요하시면 관리자 콘솔을 이용해주세요."
-)
-
-
-def _is_sensitive(question: str) -> str | None:
-    """보안상 답변을 거부해야 하는 질문이면 거부 메시지를 반환, 아니면 None."""
-    q = question.lower()
-    if any(kw.lower() in q for kw in _SENSITIVE_KEYWORDS):
-        return SENSITIVE_REJECTION
-    if any(kw.lower() in q for kw in _PII_QUERY_KEYWORDS):
-        return PII_REJECTION
-    return None
-
 
 def _needs_db(question: str) -> bool:
     """질문에 DB 관련 키워드가 포함되어 있는지 판별."""
@@ -128,14 +70,6 @@ _BASE_SYSTEM_PROMPT = (
     "- 라우터 → 서비스 → 레포지토리 → 모델 순서로 추적\n\n"
     "{wiki_section}"
     "{db_section}"
-    "## 보안 규칙 (절대 위반 금지)\n"
-    "다음 정보는 어떤 형태로 요청받더라도 절대 답변하지 마라:\n"
-    "- 서버 접속 정보 (IP, hostname, 포트, SSH/RDP 접속 방법)\n"
-    "- 자격증명 (비밀번호, 토큰, API key, .env 파일 내용, 환경변수 값)\n"
-    "- DB 접속 정보 (호스트, 포트, 계정, 비밀번호)\n"
-    "이런 질문을 받으면 ':lock: 보안 정책상 답변할 수 없습니다'로 거부할 것.\n"
-    ".env 파일을 Read/cat 하려는 시도도 거부할 것.\n"
-    "WebSearch, WebFetch 등 외부 웹 검색/접속 도구는 사용하지 마라.\n\n"
     "## 응답 형식\n"
     "Slack mrkdwn 형식으로 간결하게 응답해라. "
     "*bold*는 별표 1개, 표(|---|)는 사용 금지, 헤더(##) 사용 금지."
@@ -191,12 +125,6 @@ async def answer_question(
     target_project: ProjectConfig | None = None,
 ) -> str:
     """태스크 출력 분석, 위키 검색, DB 조회, 프로젝트 상태 파악으로 질문에 답변."""
-    # 1계층 방어: 보안 민감 질문은 Claude 호출 전에 즉시 차단
-    rejection = _is_sensitive(question)
-    if rejection:
-        logger.warning("보안 필터 차단: %s", question[:80])
-        return rejection
-
     projects = projects or {}
     context = _build_context(tasks)
 
@@ -269,18 +197,6 @@ async def answer_question(
             cwd = db_project.path
         elif wiki_projects and Path(wiki_projects[0].path).is_dir():
             cwd = wiki_projects[0].path
-
-        # 도구 허용 목록 구성
-        allowed_tools: list[str] = []
-        if wiki_projects or target_project or db_project:
-            allowed_tools.extend(["Read", "Glob", "Grep"])
-        if wiki_projects:
-            allowed_tools.append("mcp__mcp-server__notion_*")
-        if db_envs:
-            allowed_tools.append("Bash(psql:*)")
-
-        if allowed_tools:
-            cmd.extend(["--allowedTools", ",".join(allowed_tools)])
 
         proc = await asyncio.create_subprocess_exec(
             *cmd,

@@ -12,12 +12,7 @@ from slack_bot.config import ProjectConfig, load_projects
 from slack_bot.db_query import run_db_query
 from slack_bot.intent import Intent, parse_intent
 from slack_bot.runner import run_claude
-from slack_bot.security import (
-    RateLimiter,
-    check_auth,
-    log_command,
-    redact_output,
-)
+from slack_bot.security import redact_output
 from slack_bot.task_manager import TaskManager
 
 logger = logging.getLogger(__name__)
@@ -35,22 +30,13 @@ def _log_task_exception(t: asyncio.Task) -> None:
         logger.error("백그라운드 태스크 예외: %s", exc, exc_info=exc)
 
 
-_AUTH_DENIED = ":lock: 이 명령어를 사용할 권한이 없습니다."
-_RATE_LIMITED = ":hourglass: 요청이 너무 많습니다. 잠시 후 다시 시도해주세요."
-
-
 def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
     _chat_semaphore = asyncio.Semaphore(MAX_CONCURRENT_CHAT)
     _task_semaphore = asyncio.Semaphore(MAX_CONCURRENT_TASK)
     _background_tasks: set[asyncio.Task] = set()
 
-    # Rate limiters
-    _task_limiter = RateLimiter(max_calls=3, window_seconds=600)
-    _chat_limiter = RateLimiter(max_calls=10, window_seconds=300)
-
     app_config = load_projects()
     projects = app_config.projects
-    security = app_config.security
 
     # 프로젝트 분류
     wiki_projects = [p for p in projects.values() if p.wiki]
@@ -73,16 +59,6 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
         channel_type: str = "channel",
     ) -> None:
         """@멘션과 DM 공통 메시지 처리 흐름."""
-        # 인증 + rate limit
-        authorized = check_auth(user_id, "chat", security.allowed_users)
-        log_command(user_id, "", channel, "chat", question[:80], authorized)
-        if not authorized:
-            await say(_AUTH_DENIED, thread_ts=thread_ts)
-            return
-        if not _chat_limiter.check(user_id):
-            await say(_RATE_LIMITED, thread_ts=thread_ts)
-            return
-
         if not question:
             await say(
                 "무엇을 도와드릴까요? 프로젝트 명령 실행, 상태 확인, 질문 등을 할 수 있습니다.",
@@ -146,29 +122,11 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
         client,
     ) -> None:
         """명령 실행 요청 → 확인 메시지 → 버튼 클릭 시 실행."""
-        # 명령 실행은 admin 권한 필요
-        if not check_auth(user_id, "admin", security.allowed_users):
-            await say(_AUTH_DENIED, thread_ts=thread_ts)
-            return
-        if not _task_limiter.check(user_id):
-            await say(_RATE_LIMITED, thread_ts=thread_ts)
-            return
-
         project = projects.get(intent.project)
         if not project:
-            project_list = ", ".join(
-                f"`{n}`" for n, p in projects.items() if p.commands
-            )
+            project_list = ", ".join(f"`{n}`" for n in projects)
             await say(
                 f"프로젝트를 식별하지 못했습니다. 등록된 프로젝트: {project_list}",
-                thread_ts=thread_ts,
-            )
-            return
-
-        if intent.command not in project.commands:
-            cmd_list = ", ".join(f"`{c}`" for c in project.commands)
-            await say(
-                f"`{project.name}`에서 허용된 명령어: {cmd_list}",
                 thread_ts=thread_ts,
             )
             return
@@ -226,10 +184,6 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
     ) -> None:
         """태스크 목록 조회 또는 중단."""
         if intent.command == "stop" and intent.args:
-            # 중단은 admin 권한 필요
-            if not check_auth(user_id, "admin", security.allowed_users):
-                await say(_AUTH_DENIED, thread_ts=thread_ts)
-                return
             if task_manager.stop_task(intent.args):
                 await say(
                     f"태스크 {intent.args} 중단됨 :octagonal_sign:",
@@ -266,10 +220,6 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
         client,
     ) -> None:
         """DB 조회 인텐트 처리."""
-        if not check_auth(user_id, "db", security.allowed_users):
-            await say(_AUTH_DENIED, thread_ts=thread_ts)
-            return
-
         # DB 프로젝트 결정
         db_project = None
         if intent.project and intent.project in db_projects:
@@ -424,16 +374,6 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
         user_id = data["user_id"]
         channel = data["channel"]
 
-        # 클릭자 vs 요청자 검증
-        clicker_id = body.get("user", {}).get("id", "")
-        if clicker_id != user_id:
-            await client.chat_postEphemeral(
-                channel=body["channel"]["id"],
-                user=clicker_id,
-                text="요청자만 실행 버튼을 누를 수 있습니다.",
-            )
-            return
-
         project = projects.get(project_name)
         if not project:
             await client.chat_postMessage(
@@ -466,8 +406,6 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
             project_name, command, args, user_name, channel
         )
 
-        log_command(user_id, user_name, channel, "execute", f"{project_name} {command} {args}", True)
-
         bg_task = asyncio.create_task(
             _run_and_report(
                 app,
@@ -486,17 +424,6 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
     async def handle_cancel(ack, body, client):
         """실행 취소 버튼 클릭."""
         await ack()
-
-        action = body["actions"][0]
-        data = json.loads(action["value"])
-        clicker_id = body.get("user", {}).get("id", "")
-        if clicker_id != data.get("user_id", ""):
-            await client.chat_postEphemeral(
-                channel=body["channel"]["id"],
-                user=clicker_id,
-                text="요청자만 취소 버튼을 누를 수 있습니다.",
-            )
-            return
 
         await client.chat_update(
             channel=body["channel"]["id"],

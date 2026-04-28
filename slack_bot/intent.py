@@ -177,16 +177,10 @@ def _detect_command(
     project_name: str,
     projects: dict[str, ProjectConfig],
 ) -> str:
-    """메시지에서 명령어 키워드를 감지하고, 프로젝트의 허용 명령어와 매칭."""
+    """메시지에서 명령어 키워드를 감지한다."""
     for alias, command in _COMMAND_ALIASES.items():
         if alias in lower:
-            # 프로젝트가 식별되었으면 해당 프로젝트의 허용 명령어 확인
-            if project_name and project_name in projects:
-                if command in projects[project_name].commands:
-                    return command
-            elif not project_name:
-                # 프로젝트 미식별이면 명령어만 반환
-                return command
+            return command
     return ""
 
 

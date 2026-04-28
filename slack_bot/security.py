@@ -34,8 +34,8 @@ _ENV_WHITELIST = frozenset({
 
 
 def make_safe_env(extra: dict[str, str] | None = None) -> dict[str, str]:
-    """os.environ에서 화이트리스트 키만 추출하고, extra를 병합해 반환한다."""
-    env = {k: v for k, v in os.environ.items() if k in _ENV_WHITELIST}
+    """os.environ 전체를 복사하고, extra를 병합해 반환한다."""
+    env = dict(os.environ)
     if extra:
         env.update(extra)
     return env
