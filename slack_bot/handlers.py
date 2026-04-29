@@ -3,7 +3,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
+import subprocess
+import sys
 
 from slack_bolt.async_app import AsyncApp
 
@@ -12,7 +15,7 @@ from slack_bot.config import ProjectConfig, load_projects
 from slack_bot.db_query import run_db_query
 from slack_bot.intent import Intent, parse_intent
 from slack_bot.runner import run_claude
-from slack_bot.security import redact_output
+from slack_bot.security import check_auth, redact_output
 from slack_bot.task_manager import TaskManager
 
 logger = logging.getLogger(__name__)
@@ -78,7 +81,12 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
         intent = parse_intent(question, projects)
 
         try:
-            if intent.type == "command":
+            if intent.type == "admin":
+                await _handle_admin_intent(
+                    intent, user_id, channel, thread_ts, say
+                )
+                return
+            elif intent.type == "command":
                 await _handle_command_intent(
                     intent, user_id, channel, thread_ts, say, client
                 )
@@ -112,6 +120,56 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
     # ----------------------------------------------------------------
     # 인텐트별 처리 함수
     # ----------------------------------------------------------------
+
+    async def _handle_admin_intent(
+        intent: Intent,
+        user_id: str,
+        channel: str,
+        thread_ts: str,
+        say,
+    ) -> None:
+        """관리 명령 (재시작) → 확인 버튼 후 실행."""
+        if intent.command != "restart":
+            return
+
+        if not check_auth(user_id, "admin", app_config.security.allowed_users):
+            await say(":no_entry: 관리 명령 권한이 없습니다.", thread_ts=thread_ts)
+            return
+
+        running = task_manager.get_running_tasks()
+        warning = ""
+        if running:
+            warning = f"\n:warning: 실행 중인 태스크 {len(running)}개가 중단됩니다."
+
+        action_data = json.dumps({"user_id": user_id, "channel": channel})
+        blocks = [
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"봇을 업데이트하고 재시작할까요?{warning}",
+                },
+            },
+            {
+                "type": "actions",
+                "elements": [
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "재시작"},
+                        "style": "danger",
+                        "action_id": "confirm_restart",
+                        "value": action_data,
+                    },
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "취소"},
+                        "action_id": "cancel_restart",
+                        "value": action_data,
+                    },
+                ],
+            },
+        ]
+        await say(blocks=blocks, text="봇 재시작 확인", thread_ts=thread_ts)
 
     async def _handle_command_intent(
         intent: Intent,
@@ -438,6 +496,62 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
                     },
                 }
             ],
+        )
+
+    @app.action("confirm_restart")
+    async def handle_confirm_restart(ack, body, client):
+        """재시작 확인 버튼 클릭."""
+        await ack()
+
+        channel_id = body["channel"]["id"]
+        msg_ts = body["message"]["ts"]
+        bot_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+        # git pull
+        try:
+            result = subprocess.run(
+                ["git", "pull", "origin", "main"],
+                cwd=bot_dir,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            pull_output = result.stdout.strip() or result.stderr.strip()
+        except Exception as e:
+            await client.chat_update(
+                channel=channel_id, ts=msg_ts,
+                text=f":x: git pull 실패: {e}", blocks=[],
+            )
+            return
+
+        if result.returncode != 0:
+            await client.chat_update(
+                channel=channel_id, ts=msg_ts,
+                text=f":x: git pull 실패 (exit {result.returncode}):\n```\n{pull_output}\n```",
+                blocks=[],
+            )
+            return
+
+        await client.chat_update(
+            channel=channel_id, ts=msg_ts,
+            text=f":arrows_counterclockwise: 업데이트 완료, 재시작합니다.\n```\n{pull_output}\n```",
+            blocks=[],
+        )
+
+        # 메시지 전송 완료 후 프로세스 교체
+        await asyncio.sleep(0.5)
+        os.execv(sys.executable, [sys.executable] + sys.argv)
+
+    @app.action("cancel_restart")
+    async def handle_cancel_restart(ack, body, client):
+        """재시작 취소 버튼 클릭."""
+        await ack()
+
+        await client.chat_update(
+            channel=body["channel"]["id"],
+            ts=body["message"]["ts"],
+            text="재시작을 취소했습니다. :no_entry_sign:",
+            blocks=[],
         )
 
 

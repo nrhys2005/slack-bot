@@ -10,7 +10,7 @@ from slack_bot.config import ProjectConfig
 class Intent:
     """사용자 메시지에서 파싱된 의도."""
 
-    type: str  # "command" | "status" | "question" | "task_control" | "db_query"
+    type: str  # "command" | "status" | "question" | "task_control" | "db_query" | "admin"
     project: str = ""  # 식별된 프로젝트명
     command: str = ""  # 실행할 명령어 또는 task_control 동작 (list/stop)
     args: str = ""  # 명령어 인자
@@ -43,6 +43,12 @@ _TASK_CONTROL_KEYWORDS: dict[str, str] = {
     "실행 중": "list",
 }
 
+_ADMIN_KEYWORDS: dict[str, str] = {
+    "재시작": "restart",
+    "restart": "restart",
+    "리스타트": "restart",
+}
+
 _STATUS_KEYWORDS = frozenset({
     "상태", "status", "어때", "어떻게", "현황", "돌아가",
 })
@@ -66,6 +72,11 @@ def parse_intent(
     """사용자 메시지에서 의도를 규칙 기반으로 파싱한다."""
     normalized = text.strip()
     lower = normalized.lower()
+
+    # 0. 관리 명령 감지 (재시작/업데이트)
+    admin_intent = _detect_admin(normalized, lower)
+    if admin_intent:
+        return admin_intent
 
     # 1. 태스크 제어 감지 (중단/목록)
     task_intent = _detect_task_control(normalized, lower)
@@ -124,6 +135,14 @@ def parse_intent(
         project=matched_project or "",
         raw_text=normalized,
     )
+
+
+def _detect_admin(text: str, lower: str) -> Intent | None:
+    """관리 명령(재시작/업데이트) 인텐트 감지."""
+    for keyword, action in _ADMIN_KEYWORDS.items():
+        if keyword in lower:
+            return Intent(type="admin", command=action, raw_text=text)
+    return None
 
 
 def _detect_task_control(text: str, lower: str) -> Intent | None:
