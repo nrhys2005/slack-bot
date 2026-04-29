@@ -63,6 +63,13 @@ _ISSUE_ID_RE = re.compile(r"\b([A-Z]+-\d+)\b")
 # 태스크 ID (e.g. 003, 012) — 한국어 접미사("번") 허용
 _TASK_ID_RE = re.compile(r"(\d{3})(?:번)?")
 
+# 명령 실행 의도를 나타내는 트리거 동사 (문장 끝에 위치, 뒤 문장부호 허용)
+_COMMAND_TRIGGER_RE = re.compile(
+    r"(돌려줘|실행해줘|실행해|해줘|해 줘|해줘요|해주세요|시작해|시작해줘|부탁해|부탁해요|부탁드립니다|좀)[.,!?]*\s*$"
+)
+# 슬래시 명령 직접 입력 (e.g. /review MOM-43, /harness)
+_SLASH_COMMAND_RE = re.compile(r"^/(\w+)(?:\s+(.*))?$")
+
 
 
 def parse_intent(
@@ -196,7 +203,20 @@ def _detect_command(
     project_name: str,
     projects: dict[str, ProjectConfig],
 ) -> str:
-    """메시지에서 명령어 키워드를 감지한다."""
+    """트리거 동사(해줘/돌려줘 등) 또는 슬래시 직접 입력이 있을 때만 command로 분류."""
+    # 슬래시 명령 직접 입력: /command [args] (한국어 별칭도 지원)
+    slash_match = _SLASH_COMMAND_RE.match(lower.strip())
+    if slash_match:
+        cmd = slash_match.group(1)
+        if cmd in _COMMAND_ALIASES:
+            return _COMMAND_ALIASES[cmd]
+        if cmd in set(_COMMAND_ALIASES.values()):
+            return cmd
+
+    # 트리거 동사가 없으면 command 아님
+    if not _COMMAND_TRIGGER_RE.search(lower):
+        return ""
+
     for alias, command in _COMMAND_ALIASES.items():
         if alias in lower:
             return command
@@ -225,6 +245,9 @@ def _extract_remaining_args(
                 remaining = re.sub(
                     re.escape(word), "", remaining, flags=re.IGNORECASE
                 )
+
+    # 슬래시 명령어 prefix 제거 (/review, /harness 등)
+    remaining = re.sub(r"/\w+", "", remaining)
 
     # 명령어 관련 키워드 제거
     for alias, cmd in _COMMAND_ALIASES.items():
