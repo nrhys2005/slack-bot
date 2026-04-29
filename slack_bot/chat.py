@@ -183,7 +183,11 @@ async def answer_question(
                 extra_env[f"PGPASSWORD_{name.upper()}"] = creds["password"]
         env = make_safe_env(extra_env or None)
 
-        cmd = ["claude", "-p", prompt, "--output-format", "text"]
+        cmd = [
+            "claude", "-p", prompt,
+            "--output-format", "text",
+            "--permission-mode", "bypassPermissions",
+        ]
 
         # 태스크 상태 확인 같은 단순 질문은 Sonnet으로 빠르게 응답
         if _is_status_query(question, tasks):
