@@ -64,12 +64,12 @@ _ISSUE_ID_RE = re.compile(r"\b([A-Z]+-\d+)\b")
 _TASK_ID_RE = re.compile(r"(\d{3})(?:번)?")
 
 # 명령 실행 의도를 나타내는 트리거 동사 (문장 끝에 위치, 뒤 문장부호 허용)
+# "좀"은 제외 — "개발 현황 좀" 같은 질문을 명령으로 오탐할 위험이 큼
 _COMMAND_TRIGGER_RE = re.compile(
-    r"(돌려줘|실행해줘|실행해|해줘|해 줘|해줘요|해주세요|시작해|시작해줘|부탁해|부탁해요|부탁드립니다|좀)[.,!?]*\s*$"
+    r"(돌려줘|실행해줘|실행해|해줘|해 줘|해줘요|해주세요|시작해|시작해줘|부탁해|부탁해요|부탁드립니다)[.,!?]*\s*$"
 )
 # 슬래시 명령 직접 입력 (e.g. /review MOM-43, /harness)
 _SLASH_COMMAND_RE = re.compile(r"^/(\w+)(?:\s+(.*))?$")
-
 
 
 def parse_intent(
@@ -210,8 +210,6 @@ def _detect_command(
         cmd = slash_match.group(1)
         if cmd in _COMMAND_ALIASES:
             return _COMMAND_ALIASES[cmd]
-        if cmd in set(_COMMAND_ALIASES.values()):
-            return cmd
 
     # 트리거 동사가 없으면 command 아님
     if not _COMMAND_TRIGGER_RE.search(lower):
@@ -260,9 +258,10 @@ def _extract_remaining_args(
     if issue_id:
         remaining = remaining.replace(issue_id, "")
 
-    # 액션 키워드 제거 ("돌려줘", "실행해줘", "해줘" 등)
+    # 액션 키워드 제거 — _COMMAND_TRIGGER_RE와 동일한 동사 세트 + "좀" 포함
     remaining = re.sub(
-        r"(돌려줘|실행해줘|실행해|해줘|해 줘|시작해|시작해줘|부탁해|좀)$", "",
+        r"(돌려줘|실행해줘|실행해|해줘|해 줘|해줘요|해주세요|시작해|시작해줘|부탁해|부탁해요|부탁드립니다|좀)[.,!?]*$",
+        "",
         remaining,
     )
 
