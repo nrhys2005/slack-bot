@@ -672,17 +672,18 @@ async def _run_db_query_export_and_report(
             summary += "\n:lock: 일부 민감 정보가 마스킹되었습니다."
 
         # Excel 파일 업로드
-        await app.client.files_upload_v2(
-            channel=channel,
-            thread_ts=thread_ts,
-            file=str(result.excel_path),
-            filename="query_result.xlsx",
-            title="DB 조회 결과",
-            initial_comment=summary,
-        )
-
-        # 임시 파일 정리
-        result.excel_path.unlink(missing_ok=True)
+        try:
+            await app.client.files_upload_v2(
+                channel=channel,
+                thread_ts=thread_ts,
+                file=str(result.excel_path),
+                filename="query_result.xlsx",
+                title="DB 조회 결과",
+                initial_comment=summary,
+            )
+        finally:
+            # 임시 파일 정리
+            result.excel_path.unlink(missing_ok=True)
 
     except Exception:
         logger.exception("DB 조회 엑셀 내보내기 중 에러")

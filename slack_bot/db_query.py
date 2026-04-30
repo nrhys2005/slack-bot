@@ -592,11 +592,13 @@ async def run_db_query_export(
 
         chunks: list[bytes] = []
         total_bytes = 0
+        stdout_truncated = False
         async for line in proc.stdout:
-            if total_bytes + len(line) > _MAX_EXPORT_STDOUT_BYTES:
-                break
-            chunks.append(line)
-            total_bytes += len(line)
+            if total_bytes + len(line) <= _MAX_EXPORT_STDOUT_BYTES:
+                chunks.append(line)
+                total_bytes += len(line)
+            else:
+                stdout_truncated = True
 
         try:
             await asyncio.wait_for(proc.wait(), timeout=DB_EXPORT_TIMEOUT)
@@ -610,6 +612,10 @@ async def run_db_query_export(
             )
 
         summary = b"".join(chunks).decode(errors="replace").strip()
+        if stdout_truncated:
+            summary += f"\n\n:warning: 요약 결과가 {_MAX_EXPORT_STDOUT_BYTES // 1024}KB를 초과하여 일부 생략되었습니다."
+        if len(summary) > MAX_OUTPUT_LENGTH:
+            summary = summary[:MAX_OUTPUT_LENGTH] + "\n\n... (truncated)"
 
         if proc.returncode != 0:
             if proc.stderr:
