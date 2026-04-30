@@ -75,27 +75,41 @@ pyproject.toml         # 의존성 및 스크립트 정의
 "지난주 가입한 유저 수 조회해줘"
   → intent.py: type="db_query"
   → db_query.run_db_query(question, project) — DBConfig 기반 credentials 로드
-  → claude -p로 SQL 생성·psql 실행
+  → claude -p로 SQL 생성·psql(또는 sqlite3) 실행
   → 답변 전송
+```
+
+### DB 조회 결과 CSV/Excel 내보내기
+
+```
+"지난주 가입한 유저 목록 추출해줘"
+  → intent.py: type="db_query", export=True (추출/엑셀/csv/다운로드 등 키워드)
+  → db_query.run_db_query_export(question, project)
+    → Claude CLI가 psql/sqlite3 결과를 임시 CSV 파일로 저장
+    → CSV → Excel 변환 (openpyxl)
+  → handlers.py: files_upload_v2로 Excel 파일 업로드
+  → 임시 파일 정리
 ```
 
 ## 주요 모듈 상세
 
 ### config.py
-- `DBConfig(env_file, env_prefix, model_paths)` — 프로젝트별 DB 접속 설정
+- `DBConfig(db_type, env_file, env_prefix, model_paths, db_path)` — 프로젝트별 DB 접속 설정
+  - `db_type`: "postgresql" (기본) 또는 "sqlite"
+  - `db_path`: SQLite DB 파일 경로 (프로젝트 루트 기준 상대경로)
 - `ProjectConfig(name, path, commands, description, wiki, db, mcp_tools, status_paths)` — 프로젝트 설정
 - `load_projects()`: `projects.yaml` 읽어서 `AppConfig(projects, security)` 반환
 - 하위호환: `db_backend: true` → `DBConfig` 자동 변환, `mcp_tools` 미설정 시 기본 MCP 제공
 - 프로젝트별 capabilities:
   - `wiki: true` — 위키 검색 소스 (복수 가능)
-  - `db: {...}` — DB 조회 설정 (env_file, env_prefix, model_paths)
+  - `db: {...}` — DB 조회 설정 (db_type, env_file, env_prefix, model_paths, db_path)
   - `mcp_tools: [jira_*, ...]` — Claude CLI에 전달할 MCP 도구 패턴
   - `status_paths: [logs/, ...]` — 상태 파악 시 읽을 경로
   - `description` — 채팅에서 프로젝트 식별용 키워드
 
 ### intent.py
 - `parse_intent(text, projects) -> Intent` — 규칙 기반 인텐트 파싱
-- Intent 타입: command, status, question, task_control, db_query
+- Intent 타입: command, status, question, task_control, db_query (export 플래그 포함)
 - 프로젝트명 매칭: 이름 직접 매칭 → description 키워드 매칭
 - 명령어 매핑: 한국어 ("하네스", "리뷰") → 영문 ("harness", "review")
 - 이슈 ID (`[A-Z]+-\d+`), 태스크 ID (`\d{3}`) 자동 추출
@@ -124,15 +138,19 @@ pyproject.toml         # 의존성 및 스크립트 정의
 - status_paths 설정된 프로젝트는 해당 경로의 코드/로그 읽기
 
 ### db_query.py
-- `run_db_query(question, project, wiki_path)` — 자연어 DB 조회
-- `_load_db_env(project)` — DBConfig.env_prefix 기반 credentials 로드
+- `run_db_query(question, project, wiki_path)` — 자연어 DB 조회 (PostgreSQL + SQLite)
+- `run_db_query_export(question, project, wiki_path)` — CSV/Excel 내보내기
+  - Claude CLI가 psql/sqlite3 결과를 임시 CSV로 저장 → `_csv_to_excel()`로 Excel 변환
+  - `ExportResult(summary, excel_path, error)` 반환
+- `_load_db_env(project)` — DBConfig.env_prefix 기반 credentials 로드 (PostgreSQL 전용)
 - `build_db_instructions(db_envs, model_paths)` — 동적 DB 접속정보·규칙 생성
+- `build_sqlite_db_instructions(project)` — SQLite용 DB 접속정보 생성
 - PGPASSWORD 환경변수: `PGPASSWORD_{논리명.upper()}` 패턴
 - 안전장치 (다층 방어):
   1. (근본) DB 유저 자체를 read-only 계정으로 사용 권장
   2. 프롬프트에서 SELECT 외 금지 명시
-  3. `BEGIN; SET TRANSACTION READ ONLY; ... ROLLBACK;` 래핑
-  4. `LIMIT 100` 강제
+  3. `BEGIN; SET TRANSACTION READ ONLY; ... ROLLBACK;` 래핑 (PostgreSQL)
+  4. `LIMIT 100` 강제 (내보내기는 `LIMIT 10000`)
   5. stdout 256KB 상한 (OOM 방어)
 
 ## 개발 참고사항
@@ -148,4 +166,4 @@ pyproject.toml         # 의존성 및 스크립트 정의
 - **Socket Mode** 활성화
 - **Interactivity** 활성화 (Socket Mode에서 자동, 확인 버튼용)
 - **Event Subscriptions** → Subscribe to bot events: `app_mention`, `message.im`
-- **Bot Token Scopes**: `chat:write`, `app_mentions:read`, `channels:history`, `groups:history`, `mpim:history`, `im:history`, `reactions:write` — 스코프 추가 후 앱 재설치 필요
+- **Bot Token Scopes**: `chat:write`, `files:write`, `app_mentions:read`, `channels:history`, `groups:history`, `mpim:history`, `im:history`, `reactions:write` — 스코프 추가 후 앱 재설치 필요

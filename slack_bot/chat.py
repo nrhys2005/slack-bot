@@ -10,6 +10,7 @@ from slack_bot.db_query import (
     _convert_md_tables_to_code_blocks,
     _load_db_env,
     build_db_instructions,
+    build_sqlite_db_instructions,
 )
 from slack_bot.intent import DB_KEYWORDS
 from slack_bot.security import make_safe_env
@@ -153,14 +154,17 @@ async def answer_question(
             db_project = next(iter(db_projects.values()))
 
         if db_project and db_project.db:
-            try:
-                db_envs = _load_db_env(db_project)
-                db_instructions_text = build_db_instructions(
-                    db_envs, db_project.db.model_paths
-                )
-            except DBEnvError:
-                logger.warning("DB 자격증명 로드 실패, DB 조회 없이 진행", exc_info=True)
-                db_envs = None
+            if db_project.db.db_type == "sqlite":
+                db_instructions_text = build_sqlite_db_instructions(db_project)
+            else:
+                try:
+                    db_envs = _load_db_env(db_project)
+                    db_instructions_text = build_db_instructions(
+                        db_envs, db_project.db.model_paths
+                    )
+                except DBEnvError:
+                    logger.warning("DB 자격증명 로드 실패, DB 조회 없이 진행", exc_info=True)
+                    db_envs = None
 
     system = _build_system_prompt(
         target_project=target_project,
