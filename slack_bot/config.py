@@ -11,13 +11,15 @@ import yaml
 class DBConfig:
     """프로젝트별 DB 접속 설정."""
 
-    env_file: str  # 프로젝트 루트 기준 상대경로 (e.g. "app/.env")
+    db_type: str = "postgresql"  # "postgresql" or "sqlite"
+    env_file: str = ""  # PostgreSQL: 프로젝트 루트 기준 상대경로 (e.g. "app/.env")
     env_prefix: dict[str, str] = field(
         default_factory=dict
-    )  # {논리명: 환경변수 접두사} e.g. {"ra": "POSTGRESQL_RA"}
+    )  # PostgreSQL: {논리명: 환경변수 접두사} e.g. {"ra": "POSTGRESQL_RA"}
     model_paths: list[str] = field(
         default_factory=list
     )  # 스키마 파악용 모델 경로
+    db_path: str = ""  # SQLite: DB 파일 경로 (프로젝트 루트 기준 상대경로)
 
 
 @dataclass
@@ -67,9 +69,11 @@ def load_projects(config_path: str | None = None) -> AppConfig:
         if "db" in cfg and isinstance(cfg["db"], dict):
             db_raw = cfg["db"]
             db_config = DBConfig(
-                env_file=db_raw["env_file"],
+                db_type=db_raw.get("db_type", "postgresql"),
+                env_file=db_raw.get("env_file", ""),
                 env_prefix=db_raw.get("env_prefix", {}),
                 model_paths=db_raw.get("model_paths", []),
+                db_path=db_raw.get("db_path", ""),
             )
         elif cfg.get("db_backend", False):
             # 하위호환: db_backend: true → 기존 ra/core 기본값

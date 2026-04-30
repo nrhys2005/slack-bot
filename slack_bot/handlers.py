@@ -12,7 +12,7 @@ from slack_bolt.async_app import AsyncApp
 
 from slack_bot.chat import answer_question
 from slack_bot.config import ProjectConfig, load_projects
-from slack_bot.db_query import run_db_query
+from slack_bot.db_query import run_db_query, run_db_query_export
 from slack_bot.intent import Intent, parse_intent
 from slack_bot.runner import run_claude
 from slack_bot.security import check_auth, redact_output
@@ -294,20 +294,37 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
 
         wiki_path = wiki_projects[0].path if wiki_projects else None
 
-        await say(f":mag: `{intent.raw_text}` 조회 중...", thread_ts=thread_ts)
-
-        bg_task = asyncio.create_task(
-            _run_db_query_and_report(
-                app,
-                question=intent.raw_text,
-                channel=channel,
+        if intent.export:
+            await say(
+                f":outbox_tray: `{intent.raw_text}` 데이터 추출 중...",
                 thread_ts=thread_ts,
-                user_id=user_id,
-                db_project=db_project,
-                wiki_path=wiki_path,
-                semaphore=_chat_semaphore,
             )
-        )
+            bg_task = asyncio.create_task(
+                _run_db_query_export_and_report(
+                    app,
+                    question=intent.raw_text,
+                    channel=channel,
+                    thread_ts=thread_ts,
+                    user_id=user_id,
+                    db_project=db_project,
+                    wiki_path=wiki_path,
+                    semaphore=_chat_semaphore,
+                )
+            )
+        else:
+            await say(f":mag: `{intent.raw_text}` 조회 중...", thread_ts=thread_ts)
+            bg_task = asyncio.create_task(
+                _run_db_query_and_report(
+                    app,
+                    question=intent.raw_text,
+                    channel=channel,
+                    thread_ts=thread_ts,
+                    user_id=user_id,
+                    db_project=db_project,
+                    wiki_path=wiki_path,
+                    semaphore=_chat_semaphore,
+                )
+            )
         _background_tasks.add(bg_task)
         bg_task.add_done_callback(_background_tasks.discard)
         bg_task.add_done_callback(_log_task_exception)
@@ -618,6 +635,62 @@ async def _run_and_report(
                 f":warning: *{task.project_name}* `{prompt_display}` 실행 중 에러가 발생했습니다. "
                 f"로그를 확인해주세요."
             ),
+        )
+
+
+async def _run_db_query_export_and_report(
+    app: AsyncApp,
+    question: str,
+    channel: str,
+    thread_ts: str,
+    user_id: str,
+    db_project: ProjectConfig,
+    wiki_path: str | None,
+    semaphore: asyncio.Semaphore,
+) -> None:
+    """DB 조회 → CSV → Excel → Slack 파일 업로드."""
+    try:
+        async with semaphore:
+            result = await run_db_query_export(question, db_project, wiki_path)
+
+        if result.error or result.excel_path is None:
+            # 파일 생성 실패 시 텍스트로 폴백
+            error_msg = result.error or "파일 생성에 실패했습니다."
+            if result.summary:
+                text = f"{result.summary}\n\n:warning: {error_msg}"
+            else:
+                text = f":warning: {error_msg}"
+            await app.client.chat_postMessage(
+                channel=channel, thread_ts=thread_ts, text=text,
+            )
+            return
+
+        # 요약 텍스트 마스킹
+        summary = result.summary or "DB 조회 결과"
+        summary, was_redacted = redact_output(summary)
+        if was_redacted:
+            summary += "\n:lock: 일부 민감 정보가 마스킹되었습니다."
+
+        # Excel 파일 업로드
+        try:
+            await app.client.files_upload_v2(
+                channel=channel,
+                thread_ts=thread_ts,
+                file=str(result.excel_path),
+                filename="query_result.xlsx",
+                title="DB 조회 결과",
+                initial_comment=summary,
+            )
+        finally:
+            # 임시 파일 정리
+            result.excel_path.unlink(missing_ok=True)
+
+    except Exception:
+        logger.exception("DB 조회 엑셀 내보내기 중 에러")
+        await app.client.chat_postMessage(
+            channel=channel,
+            thread_ts=thread_ts,
+            text=":warning: DB 조회 결과 파일 생성 중 에러가 발생했습니다.",
         )
 
 

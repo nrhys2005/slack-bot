@@ -15,6 +15,7 @@ class Intent:
     command: str = ""  # 실행할 명령어 또는 task_control 동작 (list/stop)
     args: str = ""  # 명령어 인자
     raw_text: str = ""  # 원본 메시지
+    export: bool = False  # DB 조회 결과를 CSV/Excel 파일로 내보내기
 
 
 # 한국어 → 명령어 매핑
@@ -56,6 +57,11 @@ _STATUS_KEYWORDS = frozenset({
 DB_KEYWORDS = frozenset({
     "조회", "쿼리", "query", "몇 건", "몇건", "통계",
     "테이블", "스키마", "DB", "db", "수치",
+})
+
+_EXPORT_KEYWORDS = frozenset({
+    "추출", "다운로드", "엑셀", "excel", "csv",
+    "파일로", "뽑아", "내보내", "export",
 })
 
 # 이슈 ID (e.g. MOM-43, PROJ-123)
@@ -121,11 +127,15 @@ def parse_intent(
 
     # 5. DB 조회 감지 (DB 프로젝트가 존재할 때만)
     has_db_project = any(p.db is not None for p in projects.values())
-    if has_db_project and any(kw in lower for kw in DB_KEYWORDS):
+    has_db_keyword = any(kw in lower for kw in DB_KEYWORDS)
+    has_export_keyword = any(kw in lower for kw in _EXPORT_KEYWORDS)
+    # export 키워드만으로는 db_query 발동 안 됨 — DB 키워드도 함께 있어야 함
+    if has_db_project and has_db_keyword:
         return Intent(
             type="db_query",
             project=matched_project or "",
             raw_text=normalized,
+            export=has_export_keyword,
         )
 
     # 6. 상태 조회 감지 (프로젝트 특정됨)
