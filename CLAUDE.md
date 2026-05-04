@@ -18,7 +18,7 @@ slack_bot/
 ├── config.py          # ProjectConfig/DBConfig 데이터클래스, projects.yaml 로드
 ├── intent.py          # 자연어 인텐트 파싱 (command, status, question, task_control, db_query)
 ├── runner.py          # run_claude() — claude -p 비동기 서브프로세스 실행 (스트리밍)
-├── handlers.py        # @멘션, DM 통합 메시지 핸들러 + 확인 버튼 액션
+├── handlers.py        # @멘션, DM 통합 메시지 핸들러 (즉시 실행 + 백그라운드)
 ├── chat.py            # Claude CLI로 태스크 출력 분석, 프로젝트 상태 파악, 질문 답변
 ├── db_query.py        # DB 프로젝트 모델 기반 자연어→SQL→psql 실행
 ├── task_manager.py    # TaskInfo/TaskManager — 실행 중 태스크 추적, 출력 누적
@@ -30,19 +30,18 @@ pyproject.toml         # 의존성 및 스크립트 정의
 
 ## 아키텍처 흐름
 
-### 채팅 기반 명령 실행 (확인 후 실행)
+### 채팅 기반 명령 실행 (즉시 백그라운드 실행)
 
 ```
 "moment-some 하네스 MOM-43 돌려줘"
   → handlers.py: 메시지 수신 (app_mention 또는 DM)
   → intent.py: parse_intent() — type="command", project="moment-some", command="harness", args="MOM-43"
-  → 확인 메시지 전송: "moment-some에서 /harness MOM-43 실행할까요?" + [실행] [취소] 버튼
-  → [실행] 클릭 → action 핸들러
-    → TaskManager.create_task() — 태스크 ID 부여, 추적 시작
-    → asyncio.create_task()로 백그라운드 실행
-      → runner.py: claude -p "/harness MOM-43" (프로젝트별 MCP 도구 동적 구성)
-      → stdout 라인별 스트리밍 → TaskInfo.output_lines에 누적
-      → 완료 시 결과를 Block Kit 메시지로 전송
+  → 즉시 시작 알림: ":rocket: moment-some /harness MOM-43 실행을 시작합니다. (태스크 ID: 001)"
+  → TaskManager.create_task() — 태스크 ID 부여, 추적 시작
+  → asyncio.create_task()로 백그라운드 실행
+    → runner.py: claude -p "/harness MOM-43" (프로젝트별 MCP 도구 동적 구성)
+    → stdout 라인별 스트리밍 → TaskInfo.output_lines에 누적
+    → 완료 시 결과를 같은 스레드에 Block Kit 메��지로 전송
 ```
 
 ### 프로젝트 상태 파악
@@ -125,11 +124,11 @@ pyproject.toml         # 의존성 및 스크립트 정의
 - `register_handlers(app, task_manager)`: 앱 시작 시 프로젝트 로드
 - `app_mention` / `message(DM)` → 통합 `_handle_message()` → 인텐트별 분기
 - 인텐트별 처리:
-  - command → 확인 메시지(Block Kit 버튼) → 승인 시 runner.py 실행
+  - command → 즉시 백그라운드 실행 + 시작 알림 → 완료 시 같은 스레드에 결과 전송
   - task_control → 태스크 목록/중단
   - db_query → db_query.py로 위임
   - status/question → chat.py로 위임
-- `confirm_execute` / `cancel_execute` 액션 핸들러 (버튼 클릭)
+- `confirm_execute` / `cancel_execute` 액션 핸들러 (레거시 호환용)
 
 ### chat.py
 - `answer_question(question, tasks, thread_history, projects, target_project)` — 질문 답변
