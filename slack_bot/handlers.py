@@ -179,7 +179,7 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
         say,
         client,
     ) -> None:
-        """명령 실행 요청 → 확인 메시지 → 버튼 클릭 시 실행."""
+        """명령 실행 요청 → 즉시 백그라운드 실행 + 시작 알림."""
         project = projects.get(intent.project)
         if not project:
             project_list = ", ".join(f"`{n}`" for n in projects)
@@ -189,49 +189,34 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
             )
             return
 
-        # 확인 메시지 (Block Kit + 버튼)
         prompt_display = f"/{intent.command} {intent.args}".strip()
-        # Block Kit value 필드는 2000자 제한 — args를 truncate
-        safe_args = intent.args[:1500] if len(intent.args) > 1500 else intent.args
-        action_data = json.dumps({
-            "project": intent.project,
-            "command": intent.command,
-            "args": safe_args,
-            "user_id": user_id,
-            "channel": channel,
-        })
 
-        blocks = [
-            {
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": (
-                        f"*{intent.project}* 에서 `{prompt_display}` 을 실행할까요?"
-                    ),
-                },
-            },
-            {
-                "type": "actions",
-                "elements": [
-                    {
-                        "type": "button",
-                        "text": {"type": "plain_text", "text": "실행"},
-                        "style": "primary",
-                        "action_id": "confirm_execute",
-                        "value": action_data,
-                    },
-                    {
-                        "type": "button",
-                        "text": {"type": "plain_text", "text": "취소"},
-                        "action_id": "cancel_execute",
-                        "value": action_data,
-                    },
-                ],
-            },
-        ]
+        # 태스크 생성 및 백그라운드 실행
+        task_manager.cleanup_old()
+        task = await task_manager.create_task(
+            intent.project, intent.command, intent.args, user_id, channel,
+            thread_ts=thread_ts,
+        )
 
-        await say(blocks=blocks, text=f"{intent.project}에서 {prompt_display} 실행 확인", thread_ts=thread_ts)
+        bg_task = asyncio.create_task(
+            _run_and_report(
+                app,
+                task_manager,
+                project,
+                task,
+                prompt_display,
+                _task_semaphore,
+            )
+        )
+        _background_tasks.add(bg_task)
+        bg_task.add_done_callback(_background_tasks.discard)
+        bg_task.add_done_callback(_log_task_exception)
+
+        await say(
+            f":rocket: *{intent.project}* `{prompt_display}` 실행을 시작합니다. "
+            f"(태스크 ID: {task.task_id})",
+            thread_ts=thread_ts,
+        )
 
     async def _handle_task_control(
         intent: Intent,
@@ -476,9 +461,10 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
 
         # 태스크 생성 및 백그라운드 실행
         task_manager.cleanup_old()
-        user_name = body.get("user", {}).get("username", user_id)
+        thread_ts = body["message"]["ts"]
         task = await task_manager.create_task(
-            project_name, command, args, user_name, channel
+            project_name, command, args, user_id, channel,
+            thread_ts=thread_ts,
         )
 
         bg_task = asyncio.create_task(
@@ -622,20 +608,26 @@ async def _run_and_report(
             },
         ]
 
-        await app.client.chat_postMessage(
+        msg_kwargs: dict = dict(
             channel=task.channel, blocks=blocks, text=f"{status}: {prompt_display}"
         )
+        if task.thread_ts:
+            msg_kwargs["thread_ts"] = task.thread_ts
+        await app.client.chat_postMessage(**msg_kwargs)
 
     except Exception:
         logger.exception("Claude 실행 중 에러 발생")
         task_manager.complete_task(task.task_id, False)
-        await app.client.chat_postMessage(
+        err_kwargs: dict = dict(
             channel=task.channel,
             text=(
                 f":warning: *{task.project_name}* `{prompt_display}` 실행 중 에러가 발생했습니다. "
                 f"로그를 확인해주세요."
             ),
         )
+        if task.thread_ts:
+            err_kwargs["thread_ts"] = task.thread_ts
+        await app.client.chat_postMessage(**err_kwargs)
 
 
 async def _run_db_query_export_and_report(

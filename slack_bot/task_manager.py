@@ -14,6 +14,7 @@ class TaskInfo:
     user: str
     channel: str
     start_time: float
+    thread_ts: str = ""
     status: str = "running"  # running | completed | failed | stopped
     output_lines: list[str] = field(default_factory=list)
     process: asyncio.subprocess.Process | None = None
@@ -48,6 +49,7 @@ class TaskManager:
         args: str,
         user: str,
         channel: str,
+        thread_ts: str = "",
     ) -> TaskInfo:
         async with self._lock:
             self._counter += 1
@@ -59,6 +61,7 @@ class TaskManager:
                 args=args,
                 user=user,
                 channel=channel,
+                thread_ts=thread_ts,
                 start_time=time.time(),
             )
             self._tasks[task_id] = task
