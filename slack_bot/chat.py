@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+from collections.abc import Callable, Coroutine
 from pathlib import Path
+from typing import Any
 
 from slack_bot.config import ProjectConfig
 from slack_bot.db_query import (
@@ -21,6 +24,47 @@ logger = logging.getLogger(__name__)
 CHAT_TIMEOUT = 300  # 5분
 
 _STATUS_KEYWORDS = frozenset({"어디까지", "진행", "상태", "멈", "끝났"})
+
+# 스트리밍 진행 상태 콜백 타입
+ProgressCallback = Callable[[str], Coroutine[Any, Any, None]]
+
+# stream-json 도구 호출 → 사용자 친화적 상태 메시지
+_TOOL_STATUS: dict[str, str] = {
+    "mcp__mcp-server__jira_get_issue": ":mag: Jira 이슈 읽는 중...",
+    "mcp__mcp-server__jira_search_issues": ":mag: Jira 이슈 검색 중...",
+    "mcp__mcp-server__notion_search": ":notebook: Notion 검색 중...",
+    "mcp__mcp-server__notion_get_page": ":notebook: Notion 페이지 읽는 중...",
+    "mcp__mcp-server__notion_get_page_content": ":notebook: Notion 페이지 읽는 중...",
+    "Bash": ":gear: 명령 실행 중...",
+    "Read": ":page_facing_up: 파일 읽는 중...",
+    "Glob": ":file_folder: 파일 검색 중...",
+    "Grep": ":mag_right: 코드 검색 중...",
+}
+
+
+def _parse_tool_status(line: str) -> str | None:
+    """stream-json 라인에서 도구 호출을 감지해 상태 메시지를 반환."""
+    try:
+        event = json.loads(line)
+    except (json.JSONDecodeError, ValueError):
+        return None
+
+    if event.get("type") == "content_block_start":
+        block = event.get("content_block", {})
+        if block.get("type") == "tool_use":
+            tool_name = block.get("name", "")
+            # psql/sqlite3 명령 감지
+            if "psql" in tool_name or "sqlite3" in tool_name:
+                return ":floppy_disk: DB 조회 실행 중..."
+            # git 명령 감지
+            if tool_name == "Bash" and "git" in str(event):
+                return ":mag_right: 코드 분석 중..."
+            for prefix, status in _TOOL_STATUS.items():
+                if tool_name.startswith(prefix):
+                    return status
+            return f":gear: {tool_name} 실행 중..."
+
+    return None
 
 
 def _needs_db(question: str) -> bool:
@@ -124,6 +168,7 @@ async def answer_question(
     thread_history: list[dict] | None = None,
     projects: dict[str, ProjectConfig] | None = None,
     target_project: ProjectConfig | None = None,
+    on_progress: ProgressCallback | None = None,
 ) -> str:
     """태스크 출력 분석, 위키 검색, DB 조회, 프로젝트 상태 파악으로 질문에 답변."""
     projects = projects or {}
@@ -189,7 +234,8 @@ async def answer_question(
 
         cmd = [
             "claude", "-p", prompt,
-            "--output-format", "text",
+            "--output-format", "stream-json",
+            "--verbose",
             "--permission-mode", "bypassPermissions",
         ]
 
@@ -213,29 +259,57 @@ async def answer_question(
             stderr=asyncio.subprocess.PIPE,
             env=env,
         )
+        if proc.stdout is None:
+            raise RuntimeError("stdout pipe not created")
+
+        # stream-json 라인별 읽기 + 진행 상태 콜백
+        result_text = ""
+        last_status = ""
+
+        async def _read_stream() -> None:
+            nonlocal result_text, last_status
+            async for raw_line in proc.stdout:
+                line = raw_line.decode(errors="replace").strip()
+                if not line:
+                    continue
+
+                # 진행 상태 콜백 (도구 호출 감지)
+                if on_progress:
+                    status = _parse_tool_status(line)
+                    if status and status != last_status:
+                        last_status = status
+                        try:
+                            await on_progress(status)
+                        except Exception:
+                            pass
+
+                # result 이벤트에서 최종 텍스트 추출
+                try:
+                    event = json.loads(line)
+                    if event.get("type") == "result":
+                        result_text = event.get("result", "")
+                except (json.JSONDecodeError, ValueError):
+                    pass
+
         try:
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(), timeout=CHAT_TIMEOUT
+            await asyncio.wait_for(
+                asyncio.gather(_read_stream(), proc.wait()),
+                timeout=CHAT_TIMEOUT,
             )
         except asyncio.TimeoutError:
             proc.kill()
-            await proc.communicate()
+            await proc.wait()
             logger.error("Claude CLI 응답 시간 초과 (%ds)", CHAT_TIMEOUT)
             return (
                 ":warning: 응답 시간이 초과되었습니다. "
                 "질문을 더 구체적으로 해주세요."
             )
 
-        if proc.returncode != 0:
-            logger.error(
-                "Claude CLI 실패 (exit %d)\nstdout: %s\nstderr: %s",
-                proc.returncode,
-                stdout.decode(errors="replace"),
-                stderr.decode(errors="replace"),
-            )
+        if proc.returncode != 0 and not result_text:
+            logger.error("Claude CLI 실패 (exit %d)", proc.returncode)
             return ":warning: 질문 처리 중 오류가 발생했습니다. 로그를 확인해주세요."
 
-        output = stdout.decode(errors="replace").strip()
+        output = result_text.strip()
         output = _convert_md_tables_to_code_blocks(output)
         return output
     except Exception:

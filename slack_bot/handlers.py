@@ -387,6 +387,24 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
         # target_project 결정
         target_project = projects.get(intent.project) if intent.project else None
 
+        # 진행 상태 메시지 전송
+        progress_msg = await client.chat_postMessage(
+            channel=channel,
+            thread_ts=thread_ts,
+            text=":hourglass_flowing_sand: 처리 중...",
+        )
+        progress_ts = progress_msg["ts"]
+
+        async def _on_progress(status: str) -> None:
+            try:
+                await client.chat_update(
+                    channel=channel,
+                    ts=progress_ts,
+                    text=status,
+                )
+            except Exception:
+                pass
+
         try:
             async with _chat_semaphore:
                 answer = await answer_question(
@@ -395,10 +413,17 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
                     thread_history,
                     projects=projects,
                     target_project=target_project,
+                    on_progress=_on_progress,
                 )
         except Exception:
             logger.exception("질문 답변 처리 중 에러")
             answer = ":warning: 질문 처리 중 오류가 발생했습니다."
+
+        # 진행 상태 메시지 삭제
+        try:
+            await client.chat_delete(channel=channel, ts=progress_ts)
+        except Exception:
+            pass
 
         # 출력 마스킹
         answer, was_redacted = redact_output(answer)
