@@ -128,48 +128,77 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
         thread_ts: str,
         say,
     ) -> None:
-        """관리 명령 (재시작) → 확인 버튼 후 실행."""
-        if intent.command != "restart":
-            return
-
+        """관리 명령 (재시작/설치) → 확인 버튼 후 실행."""
         if not check_auth(user_id, "admin", app_config.security.allowed_users):
             await say(":no_entry: 관리 명령 권한이 없습니다.", thread_ts=thread_ts)
             return
 
-        running = task_manager.get_running_tasks()
-        warning = ""
-        if running:
-            warning = f"\n:warning: 실행 중인 태스크 {len(running)}개가 중단됩니다."
+        if intent.command == "restart":
+            running = task_manager.get_running_tasks()
+            warning = ""
+            if running:
+                warning = f"\n:warning: 실행 중인 태스크 {len(running)}개가 중단됩니다."
 
-        action_data = json.dumps({"user_id": user_id, "channel": channel})
-        blocks = [
-            {
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": f"봇을 업데이트하고 재시작할까요?{warning}",
+            action_data = json.dumps({"user_id": user_id, "channel": channel})
+            blocks = [
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"봇을 업데이트하고 재시작할까요?{warning}",
+                    },
                 },
-            },
-            {
-                "type": "actions",
-                "elements": [
-                    {
-                        "type": "button",
-                        "text": {"type": "plain_text", "text": "재시작"},
-                        "style": "danger",
-                        "action_id": "confirm_restart",
-                        "value": action_data,
+                {
+                    "type": "actions",
+                    "elements": [
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "재시작"},
+                            "style": "danger",
+                            "action_id": "confirm_restart",
+                            "value": action_data,
+                        },
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "취소"},
+                            "action_id": "cancel_restart",
+                            "value": action_data,
+                        },
+                    ],
+                },
+            ]
+            await say(blocks=blocks, text="봇 재시작 확인", thread_ts=thread_ts)
+
+        elif intent.command == "install_claude":
+            action_data = json.dumps({"user_id": user_id, "channel": channel})
+            blocks = [
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": "Claude CLI (`@anthropic-ai/claude-code`)를 설치할까요?",
                     },
-                    {
-                        "type": "button",
-                        "text": {"type": "plain_text", "text": "취소"},
-                        "action_id": "cancel_restart",
-                        "value": action_data,
-                    },
-                ],
-            },
-        ]
-        await say(blocks=blocks, text="봇 재시작 확인", thread_ts=thread_ts)
+                },
+                {
+                    "type": "actions",
+                    "elements": [
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "설치"},
+                            "style": "primary",
+                            "action_id": "confirm_install_claude",
+                            "value": action_data,
+                        },
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "취소"},
+                            "action_id": "cancel_install_claude",
+                            "value": action_data,
+                        },
+                    ],
+                },
+            ]
+            await say(blocks=blocks, text="Claude CLI 설치 확인", thread_ts=thread_ts)
 
     async def _handle_command_intent(
         intent: Intent,
@@ -554,6 +583,73 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
             channel=body["channel"]["id"],
             ts=body["message"]["ts"],
             text="재시작을 취소했습니다. :no_entry_sign:",
+            blocks=[],
+        )
+
+    @app.action("confirm_install_claude")
+    async def handle_confirm_install_claude(ack, body, client):
+        """Claude CLI 설치 확인 버튼 클릭."""
+        await ack()
+
+        channel_id = body["channel"]["id"]
+        msg_ts = body["message"]["ts"]
+
+        await client.chat_update(
+            channel=channel_id, ts=msg_ts,
+            text=":hourglass_flowing_sand: Claude CLI 설치 중...",
+            blocks=[],
+        )
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "npm", "install", "-g", "@anthropic-ai/claude-code",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=180,
+            )
+            output = (stdout or stderr or b"").decode(errors="replace").strip()
+            if proc.returncode == 0:
+                await client.chat_update(
+                    channel=channel_id, ts=msg_ts,
+                    text=f":white_check_mark: Claude CLI 설치 완료!\n```\n{output[:3000]}\n```",
+                    blocks=[],
+                )
+            else:
+                await client.chat_update(
+                    channel=channel_id, ts=msg_ts,
+                    text=f":x: Claude CLI 설치 실패 (exit {proc.returncode}):\n```\n{output[:3000]}\n```",
+                    blocks=[],
+                )
+        except FileNotFoundError:
+            await client.chat_update(
+                channel=channel_id, ts=msg_ts,
+                text=":x: `npm`이 설치되어 있지 않습니다. 먼저 Node.js를 설치해주세요.",
+                blocks=[],
+            )
+        except asyncio.TimeoutError:
+            await client.chat_update(
+                channel=channel_id, ts=msg_ts,
+                text=":x: Claude CLI 설치 시간이 초과되었습니다 (180초).",
+                blocks=[],
+            )
+        except Exception as e:
+            await client.chat_update(
+                channel=channel_id, ts=msg_ts,
+                text=f":x: Claude CLI 설치 중 에러: {e}",
+                blocks=[],
+            )
+
+    @app.action("cancel_install_claude")
+    async def handle_cancel_install_claude(ack, body, client):
+        """Claude CLI 설치 취소 버튼 클릭."""
+        await ack()
+
+        await client.chat_update(
+            channel=body["channel"]["id"],
+            ts=body["message"]["ts"],
+            text="Claude CLI 설치를 취소했습니다. :no_entry_sign:",
             blocks=[],
         )
 

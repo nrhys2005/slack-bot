@@ -48,6 +48,9 @@ _ADMIN_KEYWORDS: dict[str, str] = {
     "재시작": "restart",
     "restart": "restart",
     "리스타트": "restart",
+    "claude 설치": "install_claude",
+    "클로드 설치": "install_claude",
+    "install claude": "install_claude",
 }
 
 _STATUS_KEYWORDS = frozenset({
