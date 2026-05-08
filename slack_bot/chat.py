@@ -256,7 +256,7 @@ async def answer_question(
             *cmd,
             cwd=cwd,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
             env=env,
         )
         if proc.stdout is None:
