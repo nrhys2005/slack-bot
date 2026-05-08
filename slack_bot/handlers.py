@@ -71,9 +71,7 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
 
         # 즉시 리액션
         try:
-            await client.reactions_add(
-                channel=channel, timestamp=event_ts, name="eyes"
-            )
+            await client.reactions_add(channel=channel, timestamp=event_ts, name="eyes")
         except Exception:
             logger.warning("리액션 추가 실패", exc_info=True)
 
@@ -82,26 +80,29 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
 
         try:
             if intent.type == "admin":
-                await _handle_admin_intent(
-                    intent, user_id, channel, thread_ts, say
-                )
+                await _handle_admin_intent(intent, user_id, channel, thread_ts, say)
                 return
             elif intent.type == "command":
                 await _handle_command_intent(
                     intent, user_id, channel, thread_ts, say, client
                 )
             elif intent.type == "task_control":
-                await _handle_task_control(
-                    intent, user_id, channel, thread_ts, say
-                )
+                await _handle_task_control(intent, user_id, channel, thread_ts, say)
             elif intent.type == "db_query":
                 await _handle_db_query_intent(
                     intent, user_id, channel, thread_ts, event_ts, say, client
                 )
             elif intent.type in ("status", "question"):
                 await _handle_question_intent(
-                    intent, question, channel, thread_ts, event_ts, say, client,
-                    is_thread=is_thread, channel_type=channel_type,
+                    intent,
+                    question,
+                    channel,
+                    thread_ts,
+                    event_ts,
+                    say,
+                    client,
+                    is_thread=is_thread,
+                    channel_type=channel_type,
                 )
             else:
                 await say(
@@ -169,6 +170,40 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
             ]
             await say(blocks=blocks, text="봇 재시작 확인", thread_ts=thread_ts)
 
+        elif intent.command == "auth_login":
+            action_data = json.dumps({"user_id": user_id, "channel": channel})
+            blocks = [
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": (
+                            "Claude CLI 인증(`claude auth login`)을 실행할까요?\n"
+                            "인증 URL이 생성되면 이 채널에 공유됩니다."
+                        ),
+                    },
+                },
+                {
+                    "type": "actions",
+                    "elements": [
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "인증 시작"},
+                            "style": "primary",
+                            "action_id": "confirm_auth_login",
+                            "value": action_data,
+                        },
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "취소"},
+                            "action_id": "cancel_auth_login",
+                            "value": action_data,
+                        },
+                    ],
+                },
+            ]
+            await say(blocks=blocks, text="Claude CLI 인증 확인", thread_ts=thread_ts)
+
         elif intent.command == "install_claude":
             action_data = json.dumps({"user_id": user_id, "channel": channel})
             blocks = [
@@ -223,7 +258,11 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
         # 태스크 생성 및 백그라운드 실행
         task_manager.cleanup_old()
         task = await task_manager.create_task(
-            intent.project, intent.command, intent.args, user_id, channel,
+            intent.project,
+            intent.command,
+            intent.args,
+            user_id,
+            channel,
             thread_ts=thread_ts,
         )
 
@@ -446,7 +485,13 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
         channel = event["channel"]
 
         await _handle_message(
-            question, user_id, channel, thread_ts, event["ts"], say, client,
+            question,
+            user_id,
+            channel,
+            thread_ts,
+            event["ts"],
+            say,
+            client,
             is_thread=bool(event.get("thread_ts")),
             channel_type=event.get("channel_type", "channel"),
         )
@@ -466,7 +511,13 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
         channel = event["channel"]
 
         await _handle_message(
-            question, user_id, channel, thread_ts, event["ts"], say, client,
+            question,
+            user_id,
+            channel,
+            thread_ts,
+            event["ts"],
+            say,
+            client,
             is_thread=bool(event.get("thread_ts")),
             channel_type="im",
         )
@@ -517,7 +568,11 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
         task_manager.cleanup_old()
         thread_ts = body["message"]["ts"]
         task = await task_manager.create_task(
-            project_name, command, args, user_id, channel,
+            project_name,
+            command,
+            args,
+            user_id,
+            channel,
             thread_ts=thread_ts,
         )
 
@@ -576,21 +631,25 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
             pull_output = result.stdout.strip() or result.stderr.strip()
         except Exception as e:
             await client.chat_update(
-                channel=channel_id, ts=msg_ts,
-                text=f":x: git pull 실패: {e}", blocks=[],
+                channel=channel_id,
+                ts=msg_ts,
+                text=f":x: git pull 실패: {e}",
+                blocks=[],
             )
             return
 
         if result.returncode != 0:
             await client.chat_update(
-                channel=channel_id, ts=msg_ts,
+                channel=channel_id,
+                ts=msg_ts,
                 text=f":x: git pull 실패 (exit {result.returncode}):\n```\n{pull_output}\n```",
                 blocks=[],
             )
             return
 
         await client.chat_update(
-            channel=channel_id, ts=msg_ts,
+            channel=channel_id,
+            ts=msg_ts,
             text=f":arrows_counterclockwise: 업데이트 완료, 재시작합니다.\n```\n{pull_output}\n```",
             blocks=[],
         )
@@ -620,48 +679,58 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
         msg_ts = body["message"]["ts"]
 
         await client.chat_update(
-            channel=channel_id, ts=msg_ts,
+            channel=channel_id,
+            ts=msg_ts,
             text=":hourglass_flowing_sand: Claude CLI 설치 중...",
             blocks=[],
         )
 
         try:
             proc = await asyncio.create_subprocess_exec(
-                "npm", "install", "-g", "@anthropic-ai/claude-code",
+                "npm",
+                "install",
+                "-g",
+                "@anthropic-ai/claude-code",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
             stdout, stderr = await asyncio.wait_for(
-                proc.communicate(), timeout=180,
+                proc.communicate(),
+                timeout=180,
             )
             output = (stdout or stderr or b"").decode(errors="replace").strip()
             if proc.returncode == 0:
                 await client.chat_update(
-                    channel=channel_id, ts=msg_ts,
+                    channel=channel_id,
+                    ts=msg_ts,
                     text=f":white_check_mark: Claude CLI 설치 완료!\n```\n{output[:3000]}\n```",
                     blocks=[],
                 )
             else:
                 await client.chat_update(
-                    channel=channel_id, ts=msg_ts,
+                    channel=channel_id,
+                    ts=msg_ts,
                     text=f":x: Claude CLI 설치 실패 (exit {proc.returncode}):\n```\n{output[:3000]}\n```",
                     blocks=[],
                 )
         except FileNotFoundError:
             await client.chat_update(
-                channel=channel_id, ts=msg_ts,
+                channel=channel_id,
+                ts=msg_ts,
                 text=":x: `npm`이 설치되어 있지 않습니다. 먼저 Node.js를 설치해주세요.",
                 blocks=[],
             )
         except asyncio.TimeoutError:
             await client.chat_update(
-                channel=channel_id, ts=msg_ts,
+                channel=channel_id,
+                ts=msg_ts,
                 text=":x: Claude CLI 설치 시간이 초과되었습니다 (180초).",
                 blocks=[],
             )
         except Exception as e:
             await client.chat_update(
-                channel=channel_id, ts=msg_ts,
+                channel=channel_id,
+                ts=msg_ts,
                 text=f":x: Claude CLI 설치 중 에러: {e}",
                 blocks=[],
             )
@@ -675,6 +744,120 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
             channel=body["channel"]["id"],
             ts=body["message"]["ts"],
             text="Claude CLI 설치를 취소했습니다. :no_entry_sign:",
+            blocks=[],
+        )
+
+    @app.action("confirm_auth_login")
+    async def handle_confirm_auth_login(ack, body, client):
+        """Claude CLI 인증 확인 버튼 클릭."""
+        await ack()
+
+        channel_id = body["channel"]["id"]
+        msg_ts = body["message"]["ts"]
+
+        await client.chat_update(
+            channel=channel_id,
+            ts=msg_ts,
+            text=":hourglass_flowing_sand: Claude CLI 인증 프로세스를 시작합니다...",
+            blocks=[],
+        )
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "claude",
+                "auth",
+                "login",
+                "--claudeai",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+
+            AUTH_TIMEOUT = 300  # 5분
+
+            url_sent = False
+            collected_output: list[str] = []
+
+            url_re = re.compile(r"https?://\S+")
+
+            async def _read_stream(stream: asyncio.StreamReader) -> None:
+                nonlocal url_sent
+                async for line_bytes in stream:
+                    line = line_bytes.decode(errors="replace").strip()
+                    if not line:
+                        continue
+                    collected_output.append(line)
+                    logger.info("claude auth login: %s", line)
+
+                    if not url_sent:
+                        url_match = url_re.search(line)
+                        if url_match:
+                            url = url_match.group(0)
+                            url_sent = True
+                            asyncio.create_task(
+                                client.chat_postMessage(
+                                    channel=channel_id,
+                                    thread_ts=msg_ts,
+                                    text=(
+                                        ":link: 아래 URL을 브라우저에서 열어 인증을 완료하세요:\n"
+                                        f"```\n{url}\n```\n"
+                                        f"_{AUTH_TIMEOUT}초 내에 인증을 완료해주세요._"
+                                    ),
+                                )
+                            )
+
+            await asyncio.wait_for(
+                asyncio.gather(
+                    _read_stream(proc.stdout),
+                    _read_stream(proc.stderr),
+                    proc.wait(),
+                ),
+                timeout=AUTH_TIMEOUT,
+            )
+
+            if proc.returncode == 0:
+                await client.chat_postMessage(
+                    channel=channel_id,
+                    thread_ts=msg_ts,
+                    text=":white_check_mark: Claude CLI 인증이 완료되었습니다!",
+                )
+            else:
+                output = "\n".join(collected_output[-10:])
+                await client.chat_postMessage(
+                    channel=channel_id,
+                    thread_ts=msg_ts,
+                    text=f":x: Claude CLI 인증 실패 (exit {proc.returncode}):\n```\n{output[:2000]}\n```",
+                )
+
+        except FileNotFoundError:
+            await client.chat_postMessage(
+                channel=channel_id,
+                thread_ts=msg_ts,
+                text=":x: `claude` CLI가 설치되어 있지 않습니다. 먼저 Claude CLI를 설치해주세요.",
+            )
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            await client.chat_postMessage(
+                channel=channel_id,
+                thread_ts=msg_ts,
+                text=f":x: 인증 시간이 초과되었습니다 ({AUTH_TIMEOUT}초). 다시 시도해주세요.",
+            )
+        except Exception as e:
+            await client.chat_postMessage(
+                channel=channel_id,
+                thread_ts=msg_ts,
+                text=f":x: Claude CLI 인증 중 에러: {e}",
+            )
+
+    @app.action("cancel_auth_login")
+    async def handle_cancel_auth_login(ack, body, client):
+        """Claude CLI 인증 취소 버튼 클릭."""
+        await ack()
+
+        await client.chat_update(
+            channel=body["channel"]["id"],
+            ts=body["message"]["ts"],
+            text="Claude CLI 인증을 취소했습니다. :no_entry_sign:",
             blocks=[],
         )
 
@@ -704,7 +887,9 @@ async def _run_and_report(
         if output:
             output, was_redacted = redact_output(output)
             if was_redacted:
-                output += "\n\n:lock: 일부 민감 정보가 보안 정책에 의해 마스킹되었습니다."
+                output += (
+                    "\n\n:lock: 일부 민감 정보가 보안 정책에 의해 마스킹되었습니다."
+                )
 
         blocks = [
             {
@@ -722,9 +907,7 @@ async def _run_and_report(
                 "type": "section",
                 "text": {
                     "type": "mrkdwn",
-                    "text": f"```\n{output}\n```"
-                    if output
-                    else "_출력 없음_",
+                    "text": f"```\n{output}\n```" if output else "_출력 없음_",
                 },
             },
         ]
@@ -774,7 +957,9 @@ async def _run_db_query_export_and_report(
             else:
                 text = f":warning: {error_msg}"
             await app.client.chat_postMessage(
-                channel=channel, thread_ts=thread_ts, text=text,
+                channel=channel,
+                thread_ts=thread_ts,
+                text=text,
             )
             return
 
@@ -823,7 +1008,9 @@ async def _run_db_query_and_report(
         if answer:
             answer, was_redacted = redact_output(answer)
             if was_redacted:
-                answer += "\n\n:lock: 일부 민감 정보가 보안 정책에 의해 마스킹되었습니다."
+                answer += (
+                    "\n\n:lock: 일부 민감 정보가 보안 정책에 의해 마스킹되었습니다."
+                )
 
         await app.client.chat_postMessage(
             channel=channel,

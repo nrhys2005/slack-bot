@@ -10,7 +10,9 @@ from slack_bot.config import ProjectConfig
 class Intent:
     """사용자 메시지에서 파싱된 의도."""
 
-    type: str  # "command" | "status" | "question" | "task_control" | "db_query" | "admin"
+    type: (
+        str  # "command" | "status" | "question" | "task_control" | "db_query" | "admin"
+    )
     project: str = ""  # 식별된 프로젝트명
     command: str = ""  # 실행할 명령어 또는 task_control 동작 (list/stop)
     args: str = ""  # 명령어 인자
@@ -48,24 +50,55 @@ _ADMIN_KEYWORDS: dict[str, str] = {
     "재시작": "restart",
     "restart": "restart",
     "리스타트": "restart",
+    "claude 로그인": "auth_login",
+    "클로드 로그인": "auth_login",
+    "claude login": "auth_login",
+    "claude auth": "auth_login",
     "claude 설치": "install_claude",
     "클로드 설치": "install_claude",
     "install claude": "install_claude",
 }
 
-_STATUS_KEYWORDS = frozenset({
-    "상태", "status", "어때", "어떻게", "현황", "돌아가",
-})
+_STATUS_KEYWORDS = frozenset(
+    {
+        "상태",
+        "status",
+        "어때",
+        "어떻게",
+        "현황",
+        "돌아가",
+    }
+)
 
-DB_KEYWORDS = frozenset({
-    "조회", "쿼리", "query", "몇 건", "몇건", "통계",
-    "테이블", "스키마", "DB", "db", "수치",
-})
+DB_KEYWORDS = frozenset(
+    {
+        "조회",
+        "쿼리",
+        "query",
+        "몇 건",
+        "몇건",
+        "통계",
+        "테이블",
+        "스키마",
+        "DB",
+        "db",
+        "수치",
+    }
+)
 
-_EXPORT_KEYWORDS = frozenset({
-    "추출", "다운로드", "엑셀", "excel", "csv",
-    "파일로", "뽑아", "내보내", "export",
-})
+_EXPORT_KEYWORDS = frozenset(
+    {
+        "추출",
+        "다운로드",
+        "엑셀",
+        "excel",
+        "csv",
+        "파일로",
+        "뽑아",
+        "내보내",
+        "export",
+    }
+)
 
 # 이슈 ID (e.g. MOM-43, PROJ-123)
 _ISSUE_ID_RE = re.compile(r"\b([A-Z]+-\d+)\b")
@@ -78,7 +111,6 @@ _COMMAND_TRIGGER_RE = re.compile(
 )
 # 슬래시 명령 직접 입력 (e.g. /review MOM-43, /harness)
 _SLASH_COMMAND_RE = re.compile(r"^/(\w+)(?:\s+(.*))?$")
-
 
 
 def parse_intent(
@@ -255,9 +287,7 @@ def _extract_remaining_args(
         clean_desc = re.sub(r"[()（）\[\]「」]", " ", project_cfg.description)
         for word in clean_desc.split():
             if len(word) >= 2:
-                remaining = re.sub(
-                    re.escape(word), "", remaining, flags=re.IGNORECASE
-                )
+                remaining = re.sub(re.escape(word), "", remaining, flags=re.IGNORECASE)
 
     # 슬래시 명령어 prefix 제거 (/review, /harness 등)
     remaining = re.sub(r"/\w+", "", remaining)
@@ -275,7 +305,8 @@ def _extract_remaining_args(
 
     # 액션 키워드 제거 ("돌려줘", "실행해줘", "해줘" 등)
     remaining = re.sub(
-        r"(돌려줘|실행해줘|실행해|해줘|해 줘|시작해|시작해줘|부탁해|좀)$", "",
+        r"(돌려줘|실행해줘|실행해|해줘|해 줘|시작해|시작해줘|부탁해|좀)$",
+        "",
         remaining,
     )
 
