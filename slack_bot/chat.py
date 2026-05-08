@@ -234,8 +234,7 @@ async def answer_question(
 
         cmd = [
             "claude", "-p", prompt,
-            "--output-format", "stream-json",
-            "--verbose",
+            "--output-format", "text",
             "--permission-mode", "bypassPermissions",
         ]
 
@@ -256,60 +255,32 @@ async def answer_question(
             *cmd,
             cwd=cwd,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
             env=env,
         )
-        if proc.stdout is None:
-            raise RuntimeError("stdout pipe not created")
-
-        # stream-json 라인별 읽기 + 진행 상태 콜백
-        result_text = ""
-        last_status = ""
-
-        async def _read_stream() -> None:
-            nonlocal result_text, last_status
-            async for raw_line in proc.stdout:
-                line = raw_line.decode(errors="replace").strip()
-                if not line:
-                    continue
-
-                # 진행 상태 콜백 (도구 호출 감지)
-                if on_progress:
-                    status = _parse_tool_status(line)
-                    if status and status != last_status:
-                        last_status = status
-                        try:
-                            await on_progress(status)
-                        except Exception:
-                            pass
-
-                # result 이벤트에서 최종 텍스트 추출
-                try:
-                    event = json.loads(line)
-                    if event.get("type") == "result":
-                        result_text = event.get("result", "")
-                except (json.JSONDecodeError, ValueError):
-                    pass
-
         try:
-            await asyncio.wait_for(
-                asyncio.gather(_read_stream(), proc.wait()),
-                timeout=CHAT_TIMEOUT,
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=CHAT_TIMEOUT
             )
         except asyncio.TimeoutError:
             proc.kill()
-            await proc.wait()
+            await proc.communicate()
             logger.error("Claude CLI 응답 시간 초과 (%ds)", CHAT_TIMEOUT)
             return (
                 ":warning: 응답 시간이 초과되었습니다. "
                 "질문을 더 구체적으로 해주세요."
             )
 
-        if proc.returncode != 0 and not result_text:
-            logger.error("Claude CLI 실패 (exit %d)", proc.returncode)
+        if proc.returncode != 0:
+            logger.error(
+                "Claude CLI 실패 (exit %d)\nstdout: %s\nstderr: %s",
+                proc.returncode,
+                stdout.decode(errors="replace"),
+                stderr.decode(errors="replace"),
+            )
             return ":warning: 질문 처리 중 오류가 발생했습니다. 로그를 확인해주세요."
 
-        output = result_text.strip()
+        output = stdout.decode(errors="replace").strip()
         output = _convert_md_tables_to_code_blocks(output)
         return output
     except Exception:

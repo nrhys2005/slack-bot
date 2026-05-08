@@ -452,7 +452,7 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
                     thread_history,
                     projects=projects,
                     target_project=target_project,
-                    on_progress=_on_progress,
+                    on_progress=None,
                 )
         except Exception:
             logger.exception("질문 답변 처리 중 에러")
