@@ -317,15 +317,7 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
             thread_ts=thread_ts,
         )
 
-        bg_task = asyncio.create_task(
-            _run_shell_and_report(
-                app, task_manager, project, task, log_path, _task_semaphore,
-            )
-        )
-        _background_tasks.add(bg_task)
-        bg_task.add_done_callback(_background_tasks.discard)
-        bg_task.add_done_callback(_log_task_exception)
-
+        # 시작 메시지를 먼저 전송 (백그라운드 태스크보다 먼저)
         await say(
             f":rocket: 명령어 실행을 시작합니다.\n"
             f"*   태스크 ID: {task.task_id}\n"
@@ -335,6 +327,15 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
             f"나중에 결과 확인하실 때 말씀해주세요.",
             thread_ts=thread_ts,
         )
+
+        bg_task = asyncio.create_task(
+            _run_shell_and_report(
+                app, task_manager, project, task, log_path, _task_semaphore,
+            )
+        )
+        _background_tasks.add(bg_task)
+        bg_task.add_done_callback(_background_tasks.discard)
+        bg_task.add_done_callback(_log_task_exception)
 
     async def _handle_task_control(
         intent: Intent,
@@ -929,12 +930,26 @@ async def _run_shell_and_report(
     try:
         async with semaphore:
             with open(log_path, "w") as log_file:
+                env = make_safe_env()
+                # systemd 환경에서 누락되는 일반적인 바이너리 경로 보충
+                home = env.get("HOME", os.path.expanduser("~"))
+                extra_paths = [
+                    f"{home}/.local/bin",
+                    f"{home}/.cargo/bin",
+                    "/usr/local/bin",
+                ]
+                current_path = env.get("PATH", "")
+                for p in extra_paths:
+                    if p not in current_path:
+                        current_path = f"{p}:{current_path}"
+                env["PATH"] = current_path
+
                 proc = await asyncio.create_subprocess_shell(
                     task.args,
                     cwd=project.path,
                     stdout=log_file,
                     stderr=asyncio.subprocess.STDOUT,
-                    env=make_safe_env(),
+                    env=env,
                 )
                 task.process = proc
                 await proc.wait()
