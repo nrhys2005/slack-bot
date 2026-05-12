@@ -42,8 +42,6 @@ _TASK_CONTROL_KEYWORDS: dict[str, str] = {
     "stop": "stop",
     "태스크": "list",
     "task": "list",
-    "실행중": "list",
-    "실행 중": "list",
 }
 
 _ADMIN_KEYWORDS: dict[str, str] = {
