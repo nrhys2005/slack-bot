@@ -158,6 +158,17 @@ def parse_intent(
             raw_text=normalized,
         )
 
+    # 4.5 셸 명령 실행 감지: 프로젝트 + 트리거 동사 + 알려진 명령어 아님
+    if matched_project and not matched_command and _COMMAND_TRIGGER_RE.search(lower):
+        shell_cmd = _extract_shell_command(normalized, matched_project, projects)
+        if shell_cmd:
+            return Intent(
+                type="shell_exec",
+                project=matched_project,
+                command=shell_cmd,
+                raw_text=normalized,
+            )
+
     # 5. DB 조회 감지 (DB 프로젝트가 존재할 때만)
     has_db_project = any(p.db is not None for p in projects.values())
     has_db_keyword = any(kw in lower for kw in DB_KEYWORDS)
@@ -309,3 +320,47 @@ def _extract_remaining_args(
     )
 
     return remaining.strip().strip(",.!? ")
+
+
+# 셸 명령 실행 시 제거할 필러 키워드
+_SHELL_FILLER_RE = re.compile(
+    r"(프로젝트에서|에서|명령어|명령|백그라운드로|백그라운드|돌려줘|실행해줘|실행해|해줘|해 줘|해줘요|해주세요|시작해|시작해줘|부탁해|부탁해요|부탁드립니다|좀)"
+)
+# "결과는 ..." 이후 문장 제거
+_TRAILING_COMMENT_RE = re.compile(r"[.。]\s*결과는.*$")
+
+
+def _extract_shell_command(
+    text: str,
+    project_name: str,
+    projects: dict[str, ProjectConfig],
+) -> str:
+    """메시지에서 프로젝트명·필러를 제거하고 셸 명령 문자열을 추출."""
+    remaining = text
+
+    # 프로젝트명 제거
+    remaining = re.sub(re.escape(project_name), "", remaining, flags=re.IGNORECASE)
+
+    # description 키워드 제거
+    project_cfg = projects.get(project_name)
+    if project_cfg and project_cfg.description:
+        clean_desc = re.sub(r"[()（）\[\]「」]", " ", project_cfg.description)
+        for word in clean_desc.split():
+            if len(word) >= 2:
+                remaining = re.sub(
+                    re.escape(word), "", remaining, flags=re.IGNORECASE
+                )
+
+    # "결과는 ..." 이후 문장 제거
+    remaining = _TRAILING_COMMENT_RE.sub("", remaining)
+
+    # 필러 키워드 제거
+    remaining = _SHELL_FILLER_RE.sub("", remaining)
+
+    remaining = remaining.strip().strip(",.!? ")
+
+    # 너무 짧으면 셸 명령이 아님
+    if len(remaining) < 3:
+        return ""
+
+    return remaining

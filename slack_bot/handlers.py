@@ -7,6 +7,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 
 from slack_bolt.async_app import AsyncApp
 
@@ -84,6 +85,10 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
                 return
             elif intent.type == "command":
                 await _handle_command_intent(
+                    intent, user_id, channel, thread_ts, say, client
+                )
+            elif intent.type == "shell_exec":
+                await _handle_shell_exec_intent(
                     intent, user_id, channel, thread_ts, say, client
                 )
             elif intent.type == "task_control":
@@ -283,6 +288,51 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
         await say(
             f":rocket: *{intent.project}* `{prompt_display}` 실행을 시작합니다. "
             f"(태스크 ID: {task.task_id})",
+            thread_ts=thread_ts,
+        )
+
+    async def _handle_shell_exec_intent(
+        intent: Intent,
+        user_id: str,
+        channel: str,
+        thread_ts: str,
+        say,
+        client,
+    ) -> None:
+        """셸 명령 직접 실행 → 즉시 응답 + 백그라운드 실행."""
+        project = projects.get(intent.project)
+        if not project:
+            project_list = ", ".join(f"`{n}`" for n in projects)
+            await say(
+                f"프로젝트를 식별하지 못했습니다. 등록된 프로젝트: {project_list}",
+                thread_ts=thread_ts,
+            )
+            return
+
+        log_path = f"/tmp/slackbot_shell_{int(time.time())}.log"
+
+        task_manager.cleanup_old()
+        task = await task_manager.create_task(
+            intent.project, "shell", intent.command, user_id, channel,
+            thread_ts=thread_ts,
+        )
+
+        bg_task = asyncio.create_task(
+            _run_shell_and_report(
+                app, task_manager, project, task, log_path, _task_semaphore,
+            )
+        )
+        _background_tasks.add(bg_task)
+        bg_task.add_done_callback(_background_tasks.discard)
+        bg_task.add_done_callback(_log_task_exception)
+
+        await say(
+            f":rocket: 명령어 실행을 시작합니다.\n"
+            f"*   태스크 ID: {task.task_id}\n"
+            f"*   프로젝트: {intent.project}\n"
+            f"*   명령어: `{intent.command}`\n"
+            f"*   로그: `{log_path}`\n\n"
+            f"나중에 결과 확인하실 때 말씀해주세요.",
             thread_ts=thread_ts,
         )
 
@@ -865,6 +915,69 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
 # ----------------------------------------------------------------
 # 백그라운드 실행 + 결과 보고
 # ----------------------------------------------------------------
+
+
+async def _run_shell_and_report(
+    app: AsyncApp,
+    task_manager: TaskManager,
+    project: ProjectConfig,
+    task,
+    log_path: str,
+    semaphore: asyncio.Semaphore,
+) -> None:
+    """셸 명령을 직접 실행하고 완료 시 결과를 보고한다."""
+    try:
+        async with semaphore:
+            with open(log_path, "w") as log_file:
+                proc = await asyncio.create_subprocess_shell(
+                    task.args,
+                    cwd=project.path,
+                    stdout=log_file,
+                    stderr=asyncio.subprocess.STDOUT,
+                )
+                task.process = proc
+                await proc.wait()
+
+        success = proc.returncode == 0
+        task_manager.complete_task(task.task_id, success)
+
+        status = "완료" if success else "실패"
+        emoji = ":white_check_mark:" if success else ":x:"
+
+        # 로그 마지막 20줄 읽기
+        tail = ""
+        try:
+            with open(log_path) as f:
+                lines = f.readlines()
+                tail = "".join(lines[-20:])
+        except Exception:
+            pass
+
+        output = tail[:3900] if tail else "_출력 없음_"
+
+        msg_kwargs: dict = dict(
+            channel=task.channel,
+            text=(
+                f"{emoji} *{task.project_name}* `{task.args}` {status} "
+                f"(ID: {task.task_id}, {task.elapsed_display})\n"
+                f"로그: `{log_path}`\n"
+                f"```\n{output}\n```"
+            ),
+        )
+        if task.thread_ts:
+            msg_kwargs["thread_ts"] = task.thread_ts
+        await app.client.chat_postMessage(**msg_kwargs)
+
+    except Exception:
+        logger.exception("셸 명령 실행 중 에러 발생")
+        task_manager.complete_task(task.task_id, False)
+        err_kwargs: dict = dict(
+            channel=task.channel,
+            text=f":warning: `{task.args}` 실행 중 에러가 발생했습니다. 로그: `{log_path}`",
+        )
+        if task.thread_ts:
+            err_kwargs["thread_ts"] = task.thread_ts
+        await app.client.chat_postMessage(**err_kwargs)
 
 
 async def _run_and_report(
