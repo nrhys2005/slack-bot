@@ -159,7 +159,15 @@ def parse_intent(
         )
 
     # 4.5 셸 명령 실행 감지: 프로젝트 + 트리거 동사 + 알려진 명령어 아님
-    if matched_project and not matched_command and _COMMAND_TRIGGER_RE.search(lower):
+    # 문장 끝이 아니어도 트리거 동사가 있으면 매칭 (예: "실행해줘.. 결과는 나중에")
+    _has_trigger = bool(
+        _COMMAND_TRIGGER_RE.search(lower)
+        or re.search(
+            r"(돌려줘|실행해줘|실행해|해줘|해 줘|해줘요|해주세요|시작해|시작해줘|부탁해)",
+            lower,
+        )
+    )
+    if matched_project and not matched_command and _has_trigger:
         shell_cmd = _extract_shell_command(normalized, matched_project, projects)
         if shell_cmd:
             return Intent(
@@ -326,8 +334,8 @@ def _extract_remaining_args(
 _SHELL_FILLER_RE = re.compile(
     r"(프로젝트에서|에서|명령어|명령|백그라운드로|백그라운드|돌려줘|실행해줘|실행해|해줘|해 줘|해줘요|해주세요|시작해|시작해줘|부탁해|부탁해요|부탁드립니다|좀)"
 )
-# "결과는 ..." 이후 문장 제거
-_TRAILING_COMMENT_RE = re.compile(r"[.。]\s*결과는.*$")
+# "결과는 ..." 이후 문장 제거 (마침표, 쉼표, ..  등 구분자 포함)
+_TRAILING_COMMENT_RE = re.compile(r"[.。,，]+\s*결과는.*$")
 
 
 def _extract_shell_command(
@@ -361,6 +369,17 @@ def _extract_shell_command(
 
     # 너무 짧으면 셸 명령이 아님
     if len(remaining) < 3:
+        return ""
+
+    # 셸 명령처럼 보이는지 확인 — 알려진 커맨드 접두사 또는 경로 포함
+    _SHELL_CMD_HINTS = (
+        "uv ", "python ", "npm ", "node ", "bash ", "sh ", "pip ",
+        "git ", "docker ", "make ", "cargo ", "go ", "java ",
+        "cat ", "ls ", "echo ", "cd ", "mkdir ", "rm ", "cp ", "mv ",
+        "./", "/",
+    )
+    lower_remaining = remaining.lower()
+    if not any(lower_remaining.startswith(hint) for hint in _SHELL_CMD_HINTS):
         return ""
 
     return remaining
