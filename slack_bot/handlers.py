@@ -16,7 +16,7 @@ from slack_bot.config import ProjectConfig, load_projects
 from slack_bot.db_query import run_db_query, run_db_query_export
 from slack_bot.intent import Intent, parse_intent
 from slack_bot.runner import run_claude
-from slack_bot.security import check_auth, redact_output
+from slack_bot.security import check_auth, make_safe_env, redact_output
 from slack_bot.task_manager import TaskManager
 
 logger = logging.getLogger(__name__)
@@ -934,6 +934,7 @@ async def _run_shell_and_report(
                     cwd=project.path,
                     stdout=log_file,
                     stderr=asyncio.subprocess.STDOUT,
+                    env=make_safe_env(),
                 )
                 task.process = proc
                 await proc.wait()
