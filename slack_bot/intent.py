@@ -219,12 +219,15 @@ def _detect_task_control(text: str, lower: str) -> Intent | None:
     for keyword, action in _TASK_CONTROL_KEYWORDS.items():
         if keyword in lower:
             if action == "stop":
-                # 태스크 ID 추출
+                # 태스크 ID가 있을 때만 stop으로 감지
+                # "중단"은 일상어("중단 기준" 등)에서도 자주 쓰이므로
                 task_id_match = _TASK_ID_RE.search(text)
+                if not task_id_match:
+                    continue
                 return Intent(
                     type="task_control",
                     command="stop",
-                    args=task_id_match.group(1) if task_id_match else "",
+                    args=task_id_match.group(1),
                     raw_text=text,
                 )
             else:
