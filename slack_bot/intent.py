@@ -17,6 +17,7 @@ class Intent:
     command: str = ""  # 실행할 명령어 또는 task_control 동작 (list/stop)
     args: str = ""  # 명령어 인자
     raw_text: str = ""  # 원본 메시지
+    background: bool = False  # 백그라운드 실행 요청
     export: bool = False  # DB 조회 결과를 CSV/Excel 파일로 내보내기
 
 
@@ -97,6 +98,10 @@ _EXPORT_KEYWORDS = frozenset(
         "export",
     }
 )
+
+_BACKGROUND_KEYWORDS = frozenset({
+    "백그라운드로", "백그라운드", "background",
+})
 
 # 이슈 ID (e.g. MOM-43, PROJ-123)
 _ISSUE_ID_RE = re.compile(r"\b([A-Z]+-\d+)\b")
@@ -199,10 +204,12 @@ def parse_intent(
         )
 
     # 7. 기본: 일반 질문
+    is_background = any(kw in lower for kw in _BACKGROUND_KEYWORDS)
     return Intent(
         type="question",
         project=matched_project or "",
         raw_text=normalized,
+        background=is_background,
     )
 
 

@@ -98,17 +98,22 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
                     intent, user_id, channel, thread_ts, event_ts, say, client
                 )
             elif intent.type in ("status", "question"):
-                await _handle_question_intent(
-                    intent,
-                    question,
-                    channel,
-                    thread_ts,
-                    event_ts,
-                    say,
-                    client,
-                    is_thread=is_thread,
-                    channel_type=channel_type,
-                )
+                if intent.background:
+                    await _handle_background_question(
+                        intent, question, user_id, channel, thread_ts, say, client,
+                    )
+                else:
+                    await _handle_question_intent(
+                        intent,
+                        question,
+                        channel,
+                        thread_ts,
+                        event_ts,
+                        say,
+                        client,
+                        is_thread=is_thread,
+                        channel_type=channel_type,
+                    )
             else:
                 await say(
                     "무엇을 도와드릴까요? 프로젝트 명령 실행, 상태 확인, 질문 등을 할 수 있습니다.",
@@ -331,6 +336,43 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
         bg_task = asyncio.create_task(
             _run_shell_and_report(
                 app, task_manager, project, task, log_path, _task_semaphore,
+            )
+        )
+        _background_tasks.add(bg_task)
+        bg_task.add_done_callback(_background_tasks.discard)
+        bg_task.add_done_callback(_log_task_exception)
+
+    async def _handle_background_question(
+        intent: Intent,
+        question: str,
+        user_id: str,
+        channel: str,
+        thread_ts: str,
+        say,
+        client,
+    ) -> None:
+        """'백그라운드로 실행해' 키워드가 있는 질문 → claude -p 백그라운드 실행."""
+        target_project = projects.get(intent.project) if intent.project else None
+        cwd = target_project.path if target_project else None
+        project_name = intent.project or "general"
+
+        task_manager.cleanup_old()
+        task = await task_manager.create_task(
+            project_name, "background", question, user_id, channel,
+            thread_ts=thread_ts,
+        )
+
+        await say(
+            f":rocket: 백그라운드로 작업을 시작합니다.\n"
+            f"*   태스크 ID: {task.task_id}\n"
+            f"*   프로젝트: {project_name}\n\n"
+            f"완료되면 이 스레드에 결과를 알려드립니다.",
+            thread_ts=thread_ts,
+        )
+
+        bg_task = asyncio.create_task(
+            _run_background_question(
+                app, task_manager, task, question, cwd, _chat_semaphore,
             )
         )
         _background_tasks.add(bg_task)
@@ -916,6 +958,79 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
 # ----------------------------------------------------------------
 # 백그라운드 실행 + 결과 보고
 # ----------------------------------------------------------------
+
+
+async def _run_background_question(
+    app: AsyncApp,
+    task_manager: TaskManager,
+    task,
+    question: str,
+    cwd: str | None,
+    semaphore: asyncio.Semaphore,
+) -> None:
+    """claude -p를 백그라운드에서 실행하고 완료 시 결과를 보고한다."""
+    from slack_bot.security import make_safe_env
+
+    try:
+        env = make_safe_env()
+        cmd = [
+            "claude", "-p", question,
+            "--output-format", "text",
+            "--permission-mode", "bypassPermissions",
+        ]
+
+        async with semaphore:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                cwd=cwd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env,
+            )
+            task.process = proc
+            stdout, stderr = await proc.communicate()
+
+        output = stdout.decode(errors="replace").strip()
+        if not output and stderr:
+            output = stderr.decode(errors="replace").strip()
+
+        success = proc.returncode == 0
+        task_manager.complete_task(task.task_id, success)
+
+        status = "완료" if success else "실패"
+        emoji = ":white_check_mark:" if success else ":x:"
+
+        if output:
+            output, was_redacted = redact_output(output)
+            if was_redacted:
+                output += "\n\n:lock: 일부 민감 정보가 보안 정책에 의해 마스킹되었습니다."
+
+        # 출력 길이 제한
+        if len(output) > 3900:
+            output = output[:3900] + "\n\n... (truncated)"
+
+        msg_kwargs: dict = dict(
+            channel=task.channel,
+            text=(
+                f"{emoji} 백그라운드 작업 {status} "
+                f"(ID: {task.task_id}, {task.elapsed_display})\n"
+                f"{output or '_출력 없음_'}"
+            ),
+        )
+        if task.thread_ts:
+            msg_kwargs["thread_ts"] = task.thread_ts
+        await app.client.chat_postMessage(**msg_kwargs)
+
+    except Exception:
+        logger.exception("백그라운드 질문 실행 중 에러")
+        task_manager.complete_task(task.task_id, False)
+        err_kwargs: dict = dict(
+            channel=task.channel,
+            text=":warning: 백그라운드 작업 실행 중 에러가 발생했습니다.",
+        )
+        if task.thread_ts:
+            err_kwargs["thread_ts"] = task.thread_ts
+        await app.client.chat_postMessage(**err_kwargs)
 
 
 async def _run_shell_and_report(
