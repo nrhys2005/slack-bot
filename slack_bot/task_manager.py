@@ -107,7 +107,7 @@ class TaskManager:
 
     def complete_task(self, task_id: str, success: bool) -> None:
         task = self._tasks.get(task_id)
-        if task is None:
+        if task is None or task.status == "stopped":
             return
         task.status = "completed" if success else "failed"
         task.complete_time = time.time()

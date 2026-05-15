@@ -67,6 +67,22 @@ async def test_stop_task_nonexistent(tm: TaskManager):
 
 
 @pytest.mark.asyncio
+async def test_complete_task_preserves_stopped(tm: TaskManager):
+    """stop_task로 중단된 태스크는 complete_task에서 상태가 덮어쓰여지지 않는다."""
+    task = await tm.create_task("proj", "cmd", "", "user", "ch")
+    mock_proc = MagicMock()
+    mock_proc.returncode = None
+    task.process = mock_proc
+
+    assert tm.stop_task(task.task_id) is True
+    assert task.status == "stopped"
+
+    # 백그라운드 흐름이 뒤늦게 complete_task를 호출해도 stopped가 유지돼야 함
+    tm.complete_task(task.task_id, True)
+    assert task.status == "stopped"
+
+
+@pytest.mark.asyncio
 async def test_cleanup_old(tm: TaskManager):
     """완료 후 max_age 초과 태스크는 cleanup_old()에서 제거된다."""
     task = await tm.create_task("proj", "cmd", "", "user", "ch")

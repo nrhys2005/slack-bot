@@ -13,6 +13,7 @@ from dotenv import dotenv_values
 from slack_bot.config import ProjectConfig
 from slack_bot.runner import MAX_OUTPUT_LENGTH
 from slack_bot.security import make_safe_env
+from slack_bot.task_manager import TaskInfo
 
 logger = logging.getLogger(__name__)
 
@@ -290,6 +291,7 @@ async def run_db_query(
     question: str,
     project: ProjectConfig,
     wiki_path: str | None = None,
+    task: TaskInfo | None = None,
 ) -> str:
     """자연어 질문을 받아 Claude CLI로 SQL 생성·실행 후 결과 문자열 반환."""
     if project.db and project.db.db_type == "sqlite":
@@ -330,6 +332,8 @@ async def run_db_query(
             stderr=asyncio.subprocess.PIPE,
             env=env,
         )
+        if task is not None:
+            task.process = proc
 
         # stdout을 라인 단위로 스트리밍하며 누적 바이트를 제한한다.
         # 한계 초과 시 프로세스를 kill 해 메모리 폭주/행 차단.
@@ -361,6 +365,9 @@ async def run_db_query(
                 ":warning: DB 조회 시간이 초과되었습니다. "
                 "질문을 더 구체적으로 해주세요."
             )
+
+        if task is not None and task.status == "stopped":
+            return ":octagonal_sign: DB 조회가 취소되었습니다."
 
         # 에러 메시지 용도로 stderr도 읽되 과도하게 큰 경우 일부만 저장.
         if proc.stderr is None:
@@ -540,6 +547,7 @@ async def run_db_query_export(
     question: str,
     project: ProjectConfig,
     wiki_path: str | None = None,
+    task: TaskInfo | None = None,
 ) -> ExportResult:
     """자연어 질문 → Claude CLI → CSV → Excel 변환. ExportResult 반환."""
     fd, csv_path_str = tempfile.mkstemp(suffix=".csv", prefix="slack_export_")
@@ -586,6 +594,8 @@ async def run_db_query_export(
             stderr=asyncio.subprocess.PIPE,
             env=env,
         )
+        if task is not None:
+            task.process = proc
 
         if proc.stdout is None:
             raise RuntimeError("stdout pipe not created")
@@ -610,6 +620,9 @@ async def run_db_query_export(
                 summary="",
                 error="내보내기 시간이 초과되었습니다. 조건을 좁혀 다시 시도해주세요.",
             )
+
+        if task is not None and task.status == "stopped":
+            return ExportResult(summary="", error="cancelled")
 
         summary = b"".join(chunks).decode(errors="replace").strip()
         if stdout_truncated:

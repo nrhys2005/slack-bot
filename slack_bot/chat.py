@@ -169,6 +169,7 @@ async def answer_question(
     projects: dict[str, ProjectConfig] | None = None,
     target_project: ProjectConfig | None = None,
     on_progress: ProgressCallback | None = None,
+    task: TaskInfo | None = None,
 ) -> str:
     """태스크 출력 분석, 위키 검색, DB 조회, 프로젝트 상태 파악으로 질문에 답변."""
     projects = projects or {}
@@ -258,6 +259,8 @@ async def answer_question(
             stderr=asyncio.subprocess.PIPE,
             env=env,
         )
+        if task is not None:
+            task.process = proc
         try:
             stdout, stderr = await asyncio.wait_for(
                 proc.communicate(), timeout=CHAT_TIMEOUT
@@ -270,6 +273,9 @@ async def answer_question(
                 ":warning: 응답 시간이 초과되었습니다. "
                 "질문을 더 구체적으로 해주세요."
             )
+
+        if task is not None and task.status == "stopped":
+            return ":octagonal_sign: 질문 처리가 취소되었습니다."
 
         if proc.returncode != 0:
             logger.error(

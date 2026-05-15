@@ -440,14 +440,27 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
 
         wiki_path = wiki_projects[0].path if wiki_projects else None
 
+        task_manager.cleanup_old()
+        db_task = await task_manager.create_task(
+            db_project.name,
+            "db_export" if intent.export else "db",
+            intent.raw_text[:80],
+            user_id,
+            channel,
+            thread_ts=thread_ts,
+        )
+
         if intent.export:
             await say(
-                f":outbox_tray: `{intent.raw_text}` 데이터 추출 중...",
+                f":outbox_tray: `{intent.raw_text}` 데이터 추출 중... "
+                f"(ID: {db_task.task_id}, 취소: `{db_task.task_id}번 중단`)",
                 thread_ts=thread_ts,
             )
             bg_task = asyncio.create_task(
                 _run_db_query_export_and_report(
                     app,
+                    task_manager=task_manager,
+                    task=db_task,
                     question=intent.raw_text,
                     channel=channel,
                     thread_ts=thread_ts,
@@ -458,10 +471,16 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
                 )
             )
         else:
-            await say(f":mag: `{intent.raw_text}` 조회 중...", thread_ts=thread_ts)
+            await say(
+                f":mag: `{intent.raw_text}` 조회 중... "
+                f"(ID: {db_task.task_id}, 취소: `{db_task.task_id}번 중단`)",
+                thread_ts=thread_ts,
+            )
             bg_task = asyncio.create_task(
                 _run_db_query_and_report(
                     app,
+                    task_manager=task_manager,
+                    task=db_task,
                     question=intent.raw_text,
                     channel=channel,
                     thread_ts=thread_ts,
@@ -519,11 +538,24 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
         # target_project 결정
         target_project = projects.get(intent.project) if intent.project else None
 
-        # 진행 상태 메시지 전송
+        # 채팅 태스크 생성 — 자연어로 취소 가능 ("003번 중단해줘")
+        chat_task = await task_manager.create_task(
+            intent.project or "general",
+            "chat",
+            (intent.raw_text or question)[:80],
+            "",
+            channel,
+            thread_ts=thread_ts,
+        )
+
+        # 진행 상태 메시지 전송 (취소 안내 포함)
         progress_msg = await client.chat_postMessage(
             channel=channel,
             thread_ts=thread_ts,
-            text=":hourglass_flowing_sand: 처리 중...",
+            text=(
+                f":hourglass_flowing_sand: 처리 중... "
+                f"(ID: {chat_task.task_id}, 취소: `{chat_task.task_id}번 중단`)"
+            ),
         )
         progress_ts = progress_msg["ts"]
 
@@ -546,10 +578,16 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
                     projects=projects,
                     target_project=target_project,
                     on_progress=None,
+                    task=chat_task,
                 )
+            if chat_task.status == "stopped":
+                answer = ":octagonal_sign: 질문 처리가 취소되었습니다."
+            else:
+                task_manager.complete_task(chat_task.task_id, True)
         except Exception:
             logger.exception("질문 답변 처리 중 에러")
             answer = ":warning: 질문 처리 중 오류가 발생했습니다."
+            task_manager.complete_task(chat_task.task_id, False)
 
         # 진행 상태 메시지 삭제
         try:
@@ -1180,6 +1218,8 @@ async def _run_and_report(
 
 async def _run_db_query_export_and_report(
     app: AsyncApp,
+    task_manager: TaskManager,
+    task,
     question: str,
     channel: str,
     thread_ts: str,
@@ -1191,7 +1231,15 @@ async def _run_db_query_export_and_report(
     """DB 조회 → CSV → Excel → Slack 파일 업로드."""
     try:
         async with semaphore:
-            result = await run_db_query_export(question, db_project, wiki_path)
+            result = await run_db_query_export(question, db_project, wiki_path, task=task)
+
+        if task.status == "stopped":
+            await app.client.chat_postMessage(
+                channel=channel,
+                thread_ts=thread_ts,
+                text=":octagonal_sign: DB 조회가 취소되었습니다.",
+            )
+            return
 
         if result.error or result.excel_path is None:
             # 파일 생성 실패 시 텍스트로 폴백
@@ -1200,6 +1248,7 @@ async def _run_db_query_export_and_report(
                 text = f"{result.summary}\n\n:warning: {error_msg}"
             else:
                 text = f":warning: {error_msg}"
+            task_manager.complete_task(task.task_id, False)
             await app.client.chat_postMessage(
                 channel=channel,
                 thread_ts=thread_ts,
@@ -1223,12 +1272,14 @@ async def _run_db_query_export_and_report(
                 title="DB 조회 결과",
                 initial_comment=summary,
             )
+            task_manager.complete_task(task.task_id, True)
         finally:
             # 임시 파일 정리
             result.excel_path.unlink(missing_ok=True)
 
     except Exception:
         logger.exception("DB 조회 엑셀 내보내기 중 에러")
+        task_manager.complete_task(task.task_id, False)
         await app.client.chat_postMessage(
             channel=channel,
             thread_ts=thread_ts,
@@ -1238,6 +1289,8 @@ async def _run_db_query_export_and_report(
 
 async def _run_db_query_and_report(
     app: AsyncApp,
+    task_manager: TaskManager,
+    task,
     question: str,
     channel: str,
     thread_ts: str,
@@ -1248,7 +1301,16 @@ async def _run_db_query_and_report(
 ) -> None:
     try:
         async with semaphore:
-            answer = await run_db_query(question, db_project, wiki_path)
+            answer = await run_db_query(question, db_project, wiki_path, task=task)
+
+        if task.status == "stopped":
+            await app.client.chat_postMessage(
+                channel=channel,
+                thread_ts=thread_ts,
+                text=":octagonal_sign: DB 조회가 취소되었습니다.",
+            )
+            return
+
         if answer:
             answer, was_redacted = redact_output(answer)
             if was_redacted:
@@ -1256,6 +1318,7 @@ async def _run_db_query_and_report(
                     "\n\n:lock: 일부 민감 정보가 보안 정책에 의해 마스킹되었습니다."
                 )
 
+        task_manager.complete_task(task.task_id, True)
         await app.client.chat_postMessage(
             channel=channel,
             thread_ts=thread_ts,
@@ -1263,6 +1326,7 @@ async def _run_db_query_and_report(
         )
     except Exception:
         logger.exception("DB 조회 중 에러 발생")
+        task_manager.complete_task(task.task_id, False)
         await app.client.chat_postMessage(
             channel=channel,
             thread_ts=thread_ts,

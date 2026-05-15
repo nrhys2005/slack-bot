@@ -145,6 +145,10 @@ class TestRunDbQueryAndReportSemaphore:
         app.client.chat_postMessage = AsyncMock()
 
         db_project = MagicMock()
+        task_manager = MagicMock()
+        task = MagicMock()
+        task.task_id = "001"
+        task.status = "running"
 
         with patch(
             "slack_bot.handlers.run_db_query",
@@ -154,6 +158,8 @@ class TestRunDbQueryAndReportSemaphore:
             assert sem._value == 1
             await _run_db_query_and_report(
                 app,
+                task_manager=task_manager,
+                task=task,
                 question="테스트",
                 channel="C123",
                 thread_ts="1234.5678",
@@ -165,3 +171,4 @@ class TestRunDbQueryAndReportSemaphore:
             assert sem._value == 1
 
         app.client.chat_postMessage.assert_called_once()
+        task_manager.complete_task.assert_called_once_with("001", True)

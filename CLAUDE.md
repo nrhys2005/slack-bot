@@ -68,6 +68,11 @@ pyproject.toml         # 의존성 및 스크립트 정의
 "003번 중단해줘" → task_control/stop, args="003"
 ```
 
+- 명령 실행(`command`/`shell_exec`)뿐 아니라 질문 답변(`question`/`status`)과 DB 조회/추출(`db_query`)도 TaskManager에 등록되어 자연어로 중단 가능
+- `TaskManager.stop_task()` → 백그라운드 `claude -p` 프로세스에 `terminate()` + `task.status="stopped"`
+- 완료 후 `task.status == "stopped"`이면 결과 대신 ":octagonal_sign: 취소되었습니다." 응답
+- `complete_task()`는 `stopped` 상태를 덮어쓰지 않음 (terminate→subprocess 자연 종료의 늦은 도착 보호)
+
 ### 자연어 DB 조회
 
 ```
@@ -131,14 +136,16 @@ pyproject.toml         # 의존성 및 스크립트 정의
 - `confirm_execute` / `cancel_execute` 액션 핸들러 (레거시 호환용)
 
 ### chat.py
-- `answer_question(question, tasks, thread_history, projects, target_project)` — 질문 답변
+- `answer_question(question, tasks, thread_history, projects, target_project, on_progress, task)` — 질문 답변
+  - `task` 인자: TaskInfo 전달 시 서브프로세스 핸들을 등록해 `stop_task()`로 중단 가능
 - `_build_system_prompt(target_project, wiki_projects, db_instructions)` — 동적 시스템 프롬프트
 - target_project에 따라 CWD, 도구, 프롬프트가 달라짐
 - status_paths 설정된 프로젝트는 해당 경로의 코드/로그 읽기
 
 ### db_query.py
-- `run_db_query(question, project, wiki_path)` — 자연어 DB 조회 (PostgreSQL + SQLite)
-- `run_db_query_export(question, project, wiki_path)` — CSV/Excel 내보내기
+- `run_db_query(question, project, wiki_path, task=None)` — 자연어 DB 조회 (PostgreSQL + SQLite)
+- `run_db_query_export(question, project, wiki_path, task=None)` — CSV/Excel 내보내기
+  - 두 함수 모두 `task` 인자로 TaskInfo를 받으면 서브프로세스를 등록해 자연어 중단(`{ID}번 중단`)을 지원
   - Claude CLI가 psql/sqlite3 결과를 임시 CSV로 저장 → `_csv_to_excel()`로 Excel 변환
   - `ExportResult(summary, excel_path, error)` 반환
 - `_load_db_env(project)` — DBConfig.env_prefix 기반 credentials 로드 (PostgreSQL 전용)
