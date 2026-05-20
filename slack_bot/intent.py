@@ -46,9 +46,6 @@ _TASK_CONTROL_KEYWORDS: dict[str, str] = {
 }
 
 _ADMIN_KEYWORDS: dict[str, str] = {
-    "재시작": "restart",
-    "restart": "restart",
-    "리스타트": "restart",
     "claude 로그인": "auth_login",
     "클로드 로그인": "auth_login",
     "claude login": "auth_login",
@@ -57,6 +54,9 @@ _ADMIN_KEYWORDS: dict[str, str] = {
     "클로드 설치": "install_claude",
     "install claude": "install_claude",
 }
+
+# 슬래시 전용 admin 명령 — 자연어 오매칭 방지 (예: "재시작" 단어가 일반 대화에 자주 등장)
+_SLASH_ADMIN_COMMANDS: frozenset[str] = frozenset({"restart"})
 
 _STATUS_KEYWORDS = frozenset(
     {
@@ -214,7 +214,17 @@ def parse_intent(
 
 
 def _detect_admin(text: str, lower: str) -> Intent | None:
-    """관리 명령(재시작/업데이트) 인텐트 감지."""
+    """관리 명령(재시작/업데이트) 인텐트 감지.
+
+    재시작은 자연어 오매칭이 잦아 슬래시 명령(`/restart`)으로만 트리거된다.
+    """
+    # 슬래시 전용 admin 명령 우선 매칭
+    slash_match = _SLASH_COMMAND_RE.match(text.strip())
+    if slash_match:
+        cmd = slash_match.group(1).lower()
+        if cmd in _SLASH_ADMIN_COMMANDS:
+            return Intent(type="admin", command=cmd, raw_text=text)
+
     for keyword, action in _ADMIN_KEYWORDS.items():
         if keyword in lower:
             return Intent(type="admin", command=action, raw_text=text)

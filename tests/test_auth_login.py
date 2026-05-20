@@ -41,11 +41,28 @@ class TestAuthLoginIntent:
         assert intent.type == "admin"
         assert intent.command == "install_claude"
 
-    def test_restart_still_works(self):
-        """기존 restart 키워드가 정상 동작하는지 확인."""
-        intent = parse_intent("재시작", self._projects)
+    def test_restart_via_slash_command(self):
+        """/restart 슬래시 명령으로만 재시작이 트리거된다."""
+        intent = parse_intent("/restart", self._projects)
         assert intent.type == "admin"
         assert intent.command == "restart"
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "재시작",
+            "재시작해줘",
+            "리스타트 해줘",
+            "restart please",
+            "봇 재시작이 필요할까?",
+        ],
+    )
+    def test_restart_natural_language_does_not_trigger_admin(self, text: str):
+        """자연어 '재시작/restart/리스타트'는 admin으로 잡히지 않는다 (오매칭 방지)."""
+        intent = parse_intent(text, self._projects)
+        assert not (intent.type == "admin" and intent.command == "restart"), (
+            f"'{text}'가 admin/restart로 오매칭됨"
+        )
 
 
 # ----------------------------------------------------------------

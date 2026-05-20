@@ -113,10 +113,13 @@ pyproject.toml         # 의존성 및 스크립트 정의
 
 ### intent.py
 - `parse_intent(text, projects) -> Intent` — 규칙 기반 인텐트 파싱
-- Intent 타입: command, status, question, task_control, db_query (export 플래그 포함)
+- Intent 타입: command, status, question, task_control, db_query (export 플래그 포함), admin
 - 프로젝트명 매칭: 이름 직접 매칭 → description 키워드 매칭
 - 명령어 매핑: 한국어 ("하네스", "리뷰") → 영문 ("harness", "review")
 - 이슈 ID (`[A-Z]+-\d+`), 태스크 ID (`\d{3}`) 자동 추출
+- admin 명령:
+  - `_ADMIN_KEYWORDS` — 자연어 매칭 (`claude 로그인`, `claude 설치` 등)
+  - `_SLASH_ADMIN_COMMANDS` — 슬래시 전용 매칭 (`/restart`). "재시작"은 일상 대화 오매칭이 잦아 슬래시로만 트리거
 
 ### runner.py
 - `_build_allowed_tools(project)` — 프로젝트 mcp_tools 기반 동적 도구 목록 생성
