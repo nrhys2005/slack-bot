@@ -65,6 +65,49 @@ class TestAuthLoginIntent:
         )
 
 
+class TestTaskControlIntent:
+    """task_control 인텐트 파싱 회귀 — `/stop` 슬래시 전용."""
+
+    _projects: dict[str, ProjectConfig] = {}
+
+    def test_stop_via_slash_with_task_id(self):
+        """/stop <task_id> → task_control/stop."""
+        intent = parse_intent("/stop 003", self._projects)
+        assert intent.type == "task_control"
+        assert intent.command == "stop"
+        assert intent.args == "003"
+
+    def test_stop_via_slash_without_args_shows_list(self):
+        """/stop (인자 없음) → task_control/list."""
+        intent = parse_intent("/stop", self._projects)
+        assert intent.type == "task_control"
+        assert intent.command == "list"
+
+    def test_task_list_natural_language(self):
+        """'태스크' 자연어는 목록 조회로 매칭된다."""
+        intent = parse_intent("실행중인 태스크 보여줘", self._projects)
+        assert intent.type == "task_control"
+        assert intent.command == "list"
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "중단",
+            "003번 중단해줘",
+            "멈춰",
+            "stop 003",
+            "이거 중단해야겠다",
+            "프로젝트 중단됐어",
+        ],
+    )
+    def test_stop_natural_language_does_not_trigger(self, text: str):
+        """자연어 '중단/멈춰/stop'은 task_control/stop으로 잡히지 않는다."""
+        intent = parse_intent(text, self._projects)
+        assert not (
+            intent.type == "task_control" and intent.command == "stop"
+        ), f"'{text}'가 task_control/stop으로 오매칭됨"
+
+
 # ----------------------------------------------------------------
 # confirm_auth_login 핸들러 테스트
 # ----------------------------------------------------------------

@@ -37,13 +37,8 @@ _COMMAND_ALIASES: dict[str, str] = {
     "검토": "review",
 }
 
-_TASK_CONTROL_KEYWORDS: dict[str, str] = {
-    "중단": "stop",
-    "멈춰": "stop",
-    "stop": "stop",
-    "태스크": "list",
-    "task": "list",
-}
+# 자연어 목록 조회 — 오매칭 우려가 적어 그대로 둠
+_TASK_LIST_KEYWORDS: frozenset[str] = frozenset({"태스크", "task"})
 
 _ADMIN_KEYWORDS: dict[str, str] = {
     "claude 로그인": "auth_login",
@@ -232,27 +227,31 @@ def _detect_admin(text: str, lower: str) -> Intent | None:
 
 
 def _detect_task_control(text: str, lower: str) -> Intent | None:
-    """태스크 제어(중단/목록) 인텐트 감지."""
-    for keyword, action in _TASK_CONTROL_KEYWORDS.items():
-        if keyword in lower:
-            if action == "stop":
-                # 태스크 ID가 있을 때만 stop으로 감지
-                # "중단"은 일상어("중단 기준" 등)에서도 자주 쓰이므로
-                task_id_match = _TASK_ID_RE.search(text)
-                if not task_id_match:
-                    continue
-                return Intent(
-                    type="task_control",
-                    command="stop",
-                    args=task_id_match.group(1),
-                    raw_text=text,
-                )
-            else:
-                return Intent(
-                    type="task_control",
-                    command="list",
-                    raw_text=text,
-                )
+    """태스크 제어(중단/목록) 인텐트 감지.
+
+    중단은 자연어("중단", "멈춰") 오매칭이 잦아 슬래시 명령으로만 트리거된다.
+    - `/stop 003` → 003번 태스크 중단
+    - `/stop` → 실행 중인 태스크 목록
+    - "태스크 보여줘" 같은 자연어 목록 조회는 유지
+    """
+    # 슬래시 /stop — 인자 있으면 중단, 없으면 목록
+    slash_match = _SLASH_COMMAND_RE.match(text.strip())
+    if slash_match and slash_match.group(1).lower() == "stop":
+        args = (slash_match.group(2) or "").strip()
+        task_id_match = _TASK_ID_RE.search(args)
+        if task_id_match:
+            return Intent(
+                type="task_control",
+                command="stop",
+                args=task_id_match.group(1),
+                raw_text=text,
+            )
+        return Intent(type="task_control", command="list", raw_text=text)
+
+    # 자연어 목록 조회 — "태스크 보여줘"
+    if any(kw in lower for kw in _TASK_LIST_KEYWORDS):
+        return Intent(type="task_control", command="list", raw_text=text)
+
     return None
 
 

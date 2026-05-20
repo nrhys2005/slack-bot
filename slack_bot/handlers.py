@@ -453,7 +453,7 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
         if intent.export:
             await say(
                 f":outbox_tray: `{intent.raw_text}` 데이터 추출 중... "
-                f"(ID: {db_task.task_id}, 취소: `{db_task.task_id}번 중단`)",
+                f"(ID: {db_task.task_id}, 취소: `/stop {db_task.task_id}`)",
                 thread_ts=thread_ts,
             )
             bg_task = asyncio.create_task(
@@ -473,7 +473,7 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
         else:
             await say(
                 f":mag: `{intent.raw_text}` 조회 중... "
-                f"(ID: {db_task.task_id}, 취소: `{db_task.task_id}번 중단`)",
+                f"(ID: {db_task.task_id}, 취소: `/stop {db_task.task_id}`)",
                 thread_ts=thread_ts,
             )
             bg_task = asyncio.create_task(
@@ -538,7 +538,7 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
         # target_project 결정
         target_project = projects.get(intent.project) if intent.project else None
 
-        # 채팅 태스크 생성 — 자연어로 취소 가능 ("003번 중단해줘")
+        # 채팅 태스크 생성 — `/stop {ID}` 슬래시 명령으로 취소 가능
         chat_task = await task_manager.create_task(
             intent.project or "general",
             "chat",
@@ -554,7 +554,7 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
             thread_ts=thread_ts,
             text=(
                 f":hourglass_flowing_sand: 처리 중... "
-                f"(ID: {chat_task.task_id}, 취소: `{chat_task.task_id}번 중단`)"
+                f"(ID: {chat_task.task_id}, 취소: `/stop {chat_task.task_id}`)"
             ),
         )
         progress_ts = progress_msg["ts"]
