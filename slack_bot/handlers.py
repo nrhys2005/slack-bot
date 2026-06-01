@@ -14,7 +14,7 @@ from slack_bolt.async_app import AsyncApp
 from slack_bot.chat import answer_question
 from slack_bot.config import ProjectConfig, load_projects
 from slack_bot.db_query import run_db_query, run_db_query_export
-from slack_bot.intent import Intent, parse_intent
+from slack_bot.intent import _TASK_ID_RE, Intent, parse_intent
 from slack_bot.runner import run_claude
 from slack_bot.security import check_auth, make_safe_env, redact_output
 from slack_bot.task_manager import TaskManager
@@ -577,6 +577,61 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
             is_thread=bool(event.get("thread_ts")),
             channel_type="im",
         )
+
+    # ----------------------------------------------------------------
+    # 슬래시 커맨드 핸들러
+    # ----------------------------------------------------------------
+    #
+    # Slack 워크스페이스에 등록된 /restart, /stop 슬래시 커맨드는
+    # `app_mention`/`message`가 아니라 `slash_commands` 페이로드로
+    # 도착하므로 별도 핸들러가 필요하다. 핸들러가 없으면 Slack 클라이언트
+    # 입장에서는 입력해도 아무 일도 일어나지 않는다.
+
+    def _slash_say_factory(client, channel: str):
+        """슬래시 커맨드 컨텍스트에서 `say(...)`를 흉내내는 콜러블."""
+
+        async def _say(text: str | None = None, **kwargs):
+            return await client.chat_postMessage(
+                channel=channel,
+                text=text or "",
+                **kwargs,
+            )
+
+        return _say
+
+    @app.command("/restart")
+    async def handle_slash_restart(ack, body, client):
+        """`/restart` — 채널/DM 어디서든 봇 재시작 확인 버튼을 띄운다."""
+        await ack()
+        user_id = body.get("user_id", "")
+        channel = body.get("channel_id", "")
+        if not channel:
+            return
+        intent = Intent(type="admin", command="restart", raw_text="/restart")
+        say = _slash_say_factory(client, channel)
+        await _handle_admin_intent(intent, user_id, channel, None, say)
+
+    @app.command("/stop")
+    async def handle_slash_stop(ack, body, client):
+        """`/stop [task_id]` — 인자가 있으면 해당 태스크 중단, 없으면 목록."""
+        await ack()
+        user_id = body.get("user_id", "")
+        channel = body.get("channel_id", "")
+        if not channel:
+            return
+        text = (body.get("text") or "").strip()
+        task_id_match = _TASK_ID_RE.search(text)
+        if task_id_match:
+            intent = Intent(
+                type="task_control",
+                command="stop",
+                args=task_id_match.group(1),
+                raw_text=f"/stop {text}",
+            )
+        else:
+            intent = Intent(type="task_control", command="list", raw_text="/stop")
+        say = _slash_say_factory(client, channel)
+        await _handle_task_control(intent, user_id, channel, None, say)
 
     # ----------------------------------------------------------------
     # 버튼 액션 핸들러 (확인/취소)

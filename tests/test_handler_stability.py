@@ -290,3 +290,103 @@ class TestRunChatQuestionAndReport:
         task_manager.complete_task.assert_not_called()
         kwargs = app.client.chat_postMessage.call_args.kwargs
         assert ":octagonal_sign:" in kwargs["text"]
+
+
+def _register_slash_handlers():
+    """register_handlers를 mock app으로 호출하고 @app.command 콜백을 캡쳐."""
+    from slack_bot.handlers import register_handlers
+
+    commands: dict = {}
+
+    def capture_command(name):
+        def decorator(func):
+            commands[name] = func
+            return func
+        return decorator
+
+    app = MagicMock()
+    app.command = capture_command
+    app.action = lambda action_id: lambda f: f
+    app.event = lambda event_type: lambda f: f
+
+    task_manager = MagicMock()
+    task_manager.get_running_tasks.return_value = []
+
+    with patch("slack_bot.handlers.load_projects") as mock_load:
+        mock_config = MagicMock()
+        mock_config.projects = {}
+        mock_config.security.allowed_users = {"admin": ["*"]}
+        mock_load.return_value = mock_config
+        register_handlers(app, task_manager)
+
+    return commands, task_manager
+
+
+class TestSlashCommandRestart:
+    """/restart 슬래시 커맨드 핸들러 — Slack에 등록된 명령이 DM/채널에서 동작하도록."""
+
+    @pytest.mark.asyncio
+    async def test_posts_restart_confirmation(self):
+        """ack 후 재시작 확인 버튼 메시지를 channel_id로 포스트한다."""
+        commands, _ = _register_slash_handlers()
+        handler = commands.get("/restart")
+        assert handler is not None, "/restart 핸들러가 등록되어야 한다"
+
+        ack = AsyncMock()
+        client = MagicMock()
+        client.chat_postMessage = AsyncMock()
+        body = {"user_id": "U_ADMIN", "channel_id": "D123", "text": ""}
+
+        await handler(ack=ack, body=body, client=client)
+
+        ack.assert_awaited_once()
+        client.chat_postMessage.assert_awaited()
+        call_kwargs = client.chat_postMessage.call_args.kwargs
+        assert call_kwargs["channel"] == "D123"
+        # 확인 버튼 블록이 포함되었는지 (action_id로 확인)
+        blocks_text = str(call_kwargs.get("blocks", []))
+        assert "confirm_restart" in blocks_text
+
+
+class TestSlashCommandStop:
+    """/stop 슬래시 커맨드 핸들러."""
+
+    @pytest.mark.asyncio
+    async def test_with_task_id_calls_stop(self):
+        """/stop 042 → stop_task('042') 호출."""
+        commands, task_manager = _register_slash_handlers()
+        task_manager.stop_task.return_value = True
+        handler = commands.get("/stop")
+        assert handler is not None
+
+        ack = AsyncMock()
+        client = MagicMock()
+        client.chat_postMessage = AsyncMock()
+        body = {"user_id": "U1", "channel_id": "C123", "text": "042"}
+
+        await handler(ack=ack, body=body, client=client)
+
+        ack.assert_awaited_once()
+        task_manager.stop_task.assert_called_once_with("042")
+        call_kwargs = client.chat_postMessage.call_args.kwargs
+        assert "042" in call_kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_without_args_lists_running_tasks(self):
+        """/stop (인자 없음) → 실행 중 태스크 목록."""
+        commands, task_manager = _register_slash_handlers()
+        task_manager.get_running_tasks.return_value = []
+        handler = commands.get("/stop")
+        assert handler is not None
+
+        ack = AsyncMock()
+        client = MagicMock()
+        client.chat_postMessage = AsyncMock()
+        body = {"user_id": "U1", "channel_id": "C123", "text": ""}
+
+        await handler(ack=ack, body=body, client=client)
+
+        ack.assert_awaited_once()
+        task_manager.stop_task.assert_not_called()
+        call_kwargs = client.chat_postMessage.call_args.kwargs
+        assert "태스크" in call_kwargs["text"]
