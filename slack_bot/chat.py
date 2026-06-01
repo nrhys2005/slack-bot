@@ -21,7 +21,12 @@ from slack_bot.task_manager import TaskInfo
 
 logger = logging.getLogger(__name__)
 
-CHAT_TIMEOUT = 300  # 5분
+# 안전 타임아웃 — 정상 질문에 적용되는 UX 타임아웃이 아니라,
+# claude CLI 서브프로세스가 행(hang) 또는 좀비 상태가 되어 _chat_semaphore
+# 슬롯을 영구 점유하는 사고를 막기 위한 상한이다. runner.SUBPROCESS_TIMEOUT
+# (명령 실행)과 동일한 1시간으로 둔다. 사용자가 의도적으로 끊고 싶으면
+# `/stop {ID}`를 쓰는 게 정상 경로다.
+CHAT_SAFETY_TIMEOUT = 3600
 
 _STATUS_KEYWORDS = frozenset({"어디까지", "진행", "상태", "멈", "끝났"})
 
@@ -263,15 +268,21 @@ async def answer_question(
             task.process = proc
         try:
             stdout, stderr = await asyncio.wait_for(
-                proc.communicate(), timeout=CHAT_TIMEOUT
+                proc.communicate(), timeout=CHAT_SAFETY_TIMEOUT
             )
         except asyncio.TimeoutError:
-            proc.kill()
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
             await proc.communicate()
-            logger.error("Claude CLI 응답 시간 초과 (%ds)", CHAT_TIMEOUT)
+            logger.error(
+                "Claude CLI 안전 타임아웃(%ds) 초과, 프로세스 강제 종료",
+                CHAT_SAFETY_TIMEOUT,
+            )
             return (
-                ":warning: 응답 시간이 초과되었습니다. "
-                "질문을 더 구체적으로 해주세요."
+                ":warning: 질문 처리가 안전 한계(1시간)를 넘어 자동 중단되었습니다. "
+                "이런 일이 잦으면 운영팀에 알려주세요."
             )
 
         if task is not None and task.status == "stopped":

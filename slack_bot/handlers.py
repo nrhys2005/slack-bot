@@ -98,22 +98,17 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
                     intent, user_id, channel, thread_ts, event_ts, say, client
                 )
             elif intent.type in ("status", "question"):
-                if intent.background:
-                    await _handle_background_question(
-                        intent, question, user_id, channel, thread_ts, say, client,
-                    )
-                else:
-                    await _handle_question_intent(
-                        intent,
-                        question,
-                        channel,
-                        thread_ts,
-                        event_ts,
-                        say,
-                        client,
-                        is_thread=is_thread,
-                        channel_type=channel_type,
-                    )
+                await _handle_question_intent(
+                    intent,
+                    question,
+                    channel,
+                    thread_ts,
+                    event_ts,
+                    say,
+                    client,
+                    is_thread=is_thread,
+                    channel_type=channel_type,
+                )
             else:
                 await say(
                     "무엇을 도와드릴까요? 프로젝트 명령 실행, 상태 확인, 질문 등을 할 수 있습니다.",
@@ -342,43 +337,6 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
         bg_task.add_done_callback(_background_tasks.discard)
         bg_task.add_done_callback(_log_task_exception)
 
-    async def _handle_background_question(
-        intent: Intent,
-        question: str,
-        user_id: str,
-        channel: str,
-        thread_ts: str,
-        say,
-        client,
-    ) -> None:
-        """'백그라운드로 실행해' 키워드가 있는 질문 → claude -p 백그라운드 실행."""
-        target_project = projects.get(intent.project) if intent.project else None
-        cwd = target_project.path if target_project else None
-        project_name = intent.project or "general"
-
-        task_manager.cleanup_old()
-        task = await task_manager.create_task(
-            project_name, "background", question, user_id, channel,
-            thread_ts=thread_ts,
-        )
-
-        await say(
-            f":rocket: 백그라운드로 작업을 시작합니다.\n"
-            f"*   태스크 ID: {task.task_id}\n"
-            f"*   프로젝트: {project_name}\n\n"
-            f"완료되면 이 스레드에 결과를 알려드립니다.",
-            thread_ts=thread_ts,
-        )
-
-        bg_task = asyncio.create_task(
-            _run_background_question(
-                app, task_manager, task, question, cwd, _chat_semaphore,
-            )
-        )
-        _background_tasks.add(bg_task)
-        bg_task.add_done_callback(_background_tasks.discard)
-        bg_task.add_done_callback(_log_task_exception)
-
     async def _handle_task_control(
         intent: Intent,
         user_id: str,
@@ -506,14 +464,13 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
         is_thread: bool = True,
         channel_type: str = "channel",
     ) -> None:
-        """일반 질문 / 상태 조회 처리."""
+        """일반 질문 / 상태 조회 → 즉시 시작 알림 + 백그라운드 실행."""
         tasks = task_manager.get_tasks_for_channel(channel)
 
         # 대화 이력 조회
         thread_history: list[dict] = []
         try:
             if is_thread:
-                # 스레드 내 메시지 — replies로 이력 조회
                 result = await client.conversations_replies(
                     channel=channel,
                     ts=thread_ts,
@@ -522,23 +479,20 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
                 messages = result.get("messages", [])
                 thread_history = [m for m in messages if m["ts"] != event_ts][-20:]
             elif channel_type == "im":
-                # DM 최상위 메시지 — 최근 대화 이력 조회
                 result = await client.conversations_history(
                     channel=channel,
                     limit=20,
                 )
                 messages = result.get("messages", [])
-                messages.reverse()  # 시간순 정렬
+                messages.reverse()
                 thread_history = [m for m in messages if m["ts"] != event_ts][-20:]
         except Exception:
             logger.warning("대화 이력 조회 실패", exc_info=True)
 
         task_manager.cleanup_old()
 
-        # target_project 결정
         target_project = projects.get(intent.project) if intent.project else None
 
-        # 채팅 태스크 생성 — `/stop {ID}` 슬래시 명령으로 취소 가능
         chat_task = await task_manager.create_task(
             intent.project or "general",
             "chat",
@@ -548,59 +502,30 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
             thread_ts=thread_ts,
         )
 
-        # 진행 상태 메시지 전송 (취소 안내 포함)
-        progress_msg = await client.chat_postMessage(
-            channel=channel,
+        await say(
+            f":mag: 질문 처리를 시작합니다. "
+            f"(ID: {chat_task.task_id}, 취소: `/stop {chat_task.task_id}`)",
             thread_ts=thread_ts,
-            text=(
-                f":hourglass_flowing_sand: 처리 중... "
-                f"(ID: {chat_task.task_id}, 취소: `/stop {chat_task.task_id}`)"
-            ),
         )
-        progress_ts = progress_msg["ts"]
 
-        async def _on_progress(status: str) -> None:
-            try:
-                await client.chat_update(
-                    channel=channel,
-                    ts=progress_ts,
-                    text=status,
-                )
-            except Exception:
-                pass
-
-        try:
-            async with _chat_semaphore:
-                answer = await answer_question(
-                    question,
-                    tasks,
-                    thread_history,
-                    projects=projects,
-                    target_project=target_project,
-                    on_progress=None,
-                    task=chat_task,
-                )
-            if chat_task.status == "stopped":
-                answer = ":octagonal_sign: 질문 처리가 취소되었습니다."
-            else:
-                task_manager.complete_task(chat_task.task_id, True)
-        except Exception:
-            logger.exception("질문 답변 처리 중 에러")
-            answer = ":warning: 질문 처리 중 오류가 발생했습니다."
-            task_manager.complete_task(chat_task.task_id, False)
-
-        # 진행 상태 메시지 삭제
-        try:
-            await client.chat_delete(channel=channel, ts=progress_ts)
-        except Exception:
-            pass
-
-        # 출력 마스킹
-        answer, was_redacted = redact_output(answer)
-        if was_redacted:
-            answer += "\n\n:lock: 일부 민감 정보가 보안 정책에 의해 마스킹되었습니다."
-
-        await say(answer, thread_ts=thread_ts)
+        bg_task = asyncio.create_task(
+            _run_chat_question_and_report(
+                app,
+                task_manager=task_manager,
+                task=chat_task,
+                question=question,
+                tasks=tasks,
+                thread_history=thread_history,
+                projects=projects,
+                target_project=target_project,
+                channel=channel,
+                thread_ts=thread_ts,
+                semaphore=_chat_semaphore,
+            )
+        )
+        _background_tasks.add(bg_task)
+        bg_task.add_done_callback(_background_tasks.discard)
+        bg_task.add_done_callback(_log_task_exception)
 
     # ----------------------------------------------------------------
     # 이벤트 핸들러 등록
@@ -998,77 +923,65 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
 # ----------------------------------------------------------------
 
 
-async def _run_background_question(
+async def _run_chat_question_and_report(
     app: AsyncApp,
     task_manager: TaskManager,
     task,
     question: str,
-    cwd: str | None,
+    tasks: list,
+    thread_history: list[dict],
+    projects: dict[str, ProjectConfig],
+    target_project: ProjectConfig | None,
+    channel: str,
+    thread_ts: str,
     semaphore: asyncio.Semaphore,
 ) -> None:
-    """claude -p를 백그라운드에서 실행하고 완료 시 결과를 보고한다."""
-    from slack_bot.security import make_safe_env
-
+    """answer_question을 백그라운드에서 실행하고 결과를 스레드에 보고한다."""
     try:
-        env = make_safe_env()
-        cmd = [
-            "claude", "-p", question,
-            "--output-format", "text",
-            "--permission-mode", "bypassPermissions",
-        ]
-
         async with semaphore:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                cwd=cwd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=env,
+            answer = await answer_question(
+                question,
+                tasks,
+                thread_history,
+                projects=projects,
+                target_project=target_project,
+                on_progress=None,
+                task=task,
             )
-            task.process = proc
-            stdout, stderr = await proc.communicate()
 
-        output = stdout.decode(errors="replace").strip()
-        if not output and stderr:
-            output = stderr.decode(errors="replace").strip()
+        if task.status == "stopped":
+            await app.client.chat_postMessage(
+                channel=channel,
+                thread_ts=thread_ts,
+                text=":octagonal_sign: 질문 처리가 취소되었습니다.",
+            )
+            return
 
-        success = proc.returncode == 0
-        task_manager.complete_task(task.task_id, success)
+        task_manager.complete_task(task.task_id, True)
 
-        status = "완료" if success else "실패"
-        emoji = ":white_check_mark:" if success else ":x:"
-
-        if output:
-            output, was_redacted = redact_output(output)
+        if answer:
+            answer, was_redacted = redact_output(answer)
+            # Slack chat.postMessage의 text 필드는 최대 4000자
+            if len(answer) > 3900:
+                answer = answer[:3900] + "\n\n... (truncated)"
             if was_redacted:
-                output += "\n\n:lock: 일부 민감 정보가 보안 정책에 의해 마스킹되었습니다."
+                answer += (
+                    "\n\n:lock: 일부 민감 정보가 보안 정책에 의해 마스킹되었습니다."
+                )
 
-        # 출력 길이 제한
-        if len(output) > 3900:
-            output = output[:3900] + "\n\n... (truncated)"
-
-        msg_kwargs: dict = dict(
-            channel=task.channel,
-            text=(
-                f"{emoji} 백그라운드 작업 {status} "
-                f"(ID: {task.task_id}, {task.elapsed_display})\n"
-                f"{output or '_출력 없음_'}"
-            ),
+        await app.client.chat_postMessage(
+            channel=channel,
+            thread_ts=thread_ts,
+            text=answer or "_출력 없음_",
         )
-        if task.thread_ts:
-            msg_kwargs["thread_ts"] = task.thread_ts
-        await app.client.chat_postMessage(**msg_kwargs)
-
     except Exception:
-        logger.exception("백그라운드 질문 실행 중 에러")
+        logger.exception("질문 답변 처리 중 에러")
         task_manager.complete_task(task.task_id, False)
-        err_kwargs: dict = dict(
-            channel=task.channel,
-            text=":warning: 백그라운드 작업 실행 중 에러가 발생했습니다.",
+        await app.client.chat_postMessage(
+            channel=channel,
+            thread_ts=thread_ts,
+            text=":warning: 질문 처리 중 오류가 발생했습니다.",
         )
-        if task.thread_ts:
-            err_kwargs["thread_ts"] = task.thread_ts
-        await app.client.chat_postMessage(**err_kwargs)
 
 
 async def _run_shell_and_report(
