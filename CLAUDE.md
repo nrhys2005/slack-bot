@@ -44,21 +44,19 @@ pyproject.toml         # 의존성 및 스크립트 정의
     → 완료 시 결과를 같은 스레드에 Block Kit 메��지로 전송
 ```
 
-### 프로젝트 상태 파악
+### 프로젝트 상태 파악 / 질문 답변 (항상 백그라운드)
+
+질문/상태 인텐트는 명령 실행과 동일하게 즉시 시작 알림을 보내고 백그라운드 태스크로 처리된다. 타임아웃이 없으며 `/stop {ID}`로 취소 가능.
 
 ```
-"ra-backend 상태 어때?"
-  → intent.py: type="status", project="ra-backend"
-  → chat.py: answer_question() — target_project의 코드/로그/설정을 Read/Glob/Grep으로 읽어 상태 파악
-  → 답변 전송
-```
-
-### 질문 답변 (위키 검색 + 태스크 컨텍스트)
-
-```
-@bot 온보딩 절차 알려줘
-  → intent.py: type="question"
-  → chat.py: wiki 프로젝트 마크다운 검색 → Notion MCP 폴백 → 답변 전송
+"ra-backend 상태 어때?"  /  @bot 온보딩 절차 알려줘
+  → intent.py: type="status" 또는 type="question"
+  → handlers._handle_question_intent
+    → TaskManager.create_task("chat") — 추적 시작
+    → 즉시 시작 알림: ":mag: 질문 처리를 시작합니다. (ID: NNN, 취소: `/stop NNN`)"
+    → asyncio.create_task()로 _run_chat_question_and_report 백그라운드 실행
+      → chat.answer_question() — target_project 코드/로그/위키/DB를 읽어 답변 생성
+      → 완료 시 같은 스레드에 결과 메시지 전송
 ```
 
 ### 태스크 제어
@@ -138,15 +136,18 @@ pyproject.toml         # 의존성 및 스크립트 정의
 ### handlers.py
 - `register_handlers(app, task_manager)`: 앱 시작 시 프로젝트 로드
 - `app_mention` / `message(DM)` → 통합 `_handle_message()` → 인텐트별 분기
-- 인텐트별 처리:
-  - command → 즉시 백그라운드 실행 + 시작 알림 → 완료 시 같은 스레드에 결과 전송
-  - task_control → 태스크 목록/중단
-  - db_query → db_query.py로 위임
-  - status/question → chat.py로 위임
+- 인텐트별 처리(모두 즉시 시작 알림 + 백그라운드 실행):
+  - command → `_run_and_report` (`run_claude`)
+  - shell_exec → `_run_shell_and_report`
+  - status/question → `_run_chat_question_and_report` (`chat.answer_question`)
+  - db_query → `_run_db_query_and_report` 또는 `_run_db_query_export_and_report`
+  - task_control → 태스크 목록/중단 (동기 응답)
+- 모든 백그라운드 흐름은 `_chat_semaphore`/`_task_semaphore`로 동시성 제한, `/stop {ID}`로 취소 가능
 - `confirm_execute` / `cancel_execute` 액션 핸들러 (레거시 호환용)
 
 ### chat.py
 - `answer_question(question, tasks, thread_history, projects, target_project, on_progress, task)` — 질문 답변
+  - 호출자(`handlers._run_chat_question_and_report`)가 백그라운드 태스크로 실행하므로 함수 자체에는 타임아웃이 없다 — 사용자는 `/stop {ID}`로 언제든 취소
   - `task` 인자: TaskInfo 전달 시 서브프로세스 핸들을 등록해 `stop_task()`로 중단 가능
 - `_build_system_prompt(target_project, wiki_projects, db_instructions)` — 동적 시스템 프롬프트
 - target_project에 따라 CWD, 도구, 프롬프트가 달라짐

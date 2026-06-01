@@ -172,3 +172,82 @@ class TestRunDbQueryAndReportSemaphore:
 
         app.client.chat_postMessage.assert_called_once()
         task_manager.complete_task.assert_called_once_with("001", True)
+
+
+class TestRunChatQuestionAndReport:
+    """_run_chat_question_and_report 백그라운드 흐름 테스트."""
+
+    @pytest.mark.asyncio
+    async def test_posts_answer_to_thread_on_success(self):
+        from slack_bot.handlers import _run_chat_question_and_report
+
+        sem = asyncio.Semaphore(1)
+        app = MagicMock()
+        app.client.chat_postMessage = AsyncMock()
+
+        task_manager = MagicMock()
+        task = MagicMock()
+        task.task_id = "042"
+        task.status = "running"
+
+        with patch(
+            "slack_bot.handlers.answer_question",
+            new_callable=AsyncMock,
+            return_value="답변 본문",
+        ):
+            await _run_chat_question_and_report(
+                app,
+                task_manager=task_manager,
+                task=task,
+                question="질문",
+                tasks=[],
+                thread_history=[],
+                projects={},
+                target_project=None,
+                channel="C123",
+                thread_ts="1234.5678",
+                semaphore=sem,
+            )
+
+        task_manager.complete_task.assert_called_once_with("042", True)
+        app.client.chat_postMessage.assert_called_once()
+        kwargs = app.client.chat_postMessage.call_args.kwargs
+        assert kwargs["channel"] == "C123"
+        assert kwargs["thread_ts"] == "1234.5678"
+        assert "답변 본문" in kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_reports_cancellation_when_stopped(self):
+        from slack_bot.handlers import _run_chat_question_and_report
+
+        sem = asyncio.Semaphore(1)
+        app = MagicMock()
+        app.client.chat_postMessage = AsyncMock()
+
+        task_manager = MagicMock()
+        task = MagicMock()
+        task.task_id = "043"
+        task.status = "stopped"
+
+        with patch(
+            "slack_bot.handlers.answer_question",
+            new_callable=AsyncMock,
+            return_value=":octagonal_sign: 질문 처리가 취소되었습니다.",
+        ):
+            await _run_chat_question_and_report(
+                app,
+                task_manager=task_manager,
+                task=task,
+                question="질문",
+                tasks=[],
+                thread_history=[],
+                projects={},
+                target_project=None,
+                channel="C123",
+                thread_ts="1234.5678",
+                semaphore=sem,
+            )
+
+        task_manager.complete_task.assert_not_called()
+        kwargs = app.client.chat_postMessage.call_args.kwargs
+        assert ":octagonal_sign:" in kwargs["text"]

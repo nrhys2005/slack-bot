@@ -21,8 +21,6 @@ from slack_bot.task_manager import TaskInfo
 
 logger = logging.getLogger(__name__)
 
-CHAT_TIMEOUT = 300  # 5분
-
 _STATUS_KEYWORDS = frozenset({"어디까지", "진행", "상태", "멈", "끝났"})
 
 # 스트리밍 진행 상태 콜백 타입
@@ -261,18 +259,7 @@ async def answer_question(
         )
         if task is not None:
             task.process = proc
-        try:
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(), timeout=CHAT_TIMEOUT
-            )
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.communicate()
-            logger.error("Claude CLI 응답 시간 초과 (%ds)", CHAT_TIMEOUT)
-            return (
-                ":warning: 응답 시간이 초과되었습니다. "
-                "질문을 더 구체적으로 해주세요."
-            )
+        stdout, stderr = await proc.communicate()
 
         if task is not None and task.status == "stopped":
             return ":octagonal_sign: 질문 처리가 취소되었습니다."

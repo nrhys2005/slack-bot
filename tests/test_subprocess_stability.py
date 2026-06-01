@@ -206,36 +206,6 @@ async def test_run_claude_timeout():
 
 
 @pytest.mark.asyncio
-async def test_answer_question_timeout():
-    """chat.py: communicate() timeout 시 에러 메시지 반환."""
-    from slack_bot.chat import answer_question
-
-    proc = MagicMock()
-    proc.returncode = None
-    proc.kill = MagicMock()
-
-    # communicate 후 리소스 정리용
-    async def _communicate_cleanup():
-        return b"", b""
-
-    proc.communicate = _communicate_cleanup
-
-    async def fake_wait_for(coro, timeout):
-        coro.close()
-        raise asyncio.TimeoutError()
-
-    with patch("slack_bot.chat.asyncio") as mock_asyncio:
-        mock_asyncio.create_subprocess_exec = AsyncMock(return_value=proc)
-        mock_asyncio.subprocess = asyncio.subprocess
-        mock_asyncio.TimeoutError = asyncio.TimeoutError
-        mock_asyncio.wait_for = fake_wait_for
-
-        result = await answer_question("test question", [])
-
-    assert "초과" in result
-
-
-@pytest.mark.asyncio
 async def test_answer_question_success():
     """chat.py: 정상 응답."""
     from slack_bot.chat import answer_question
@@ -251,7 +221,6 @@ async def test_answer_question_success():
     with patch("slack_bot.chat.asyncio") as mock_asyncio:
         mock_asyncio.create_subprocess_exec = AsyncMock(return_value=proc)
         mock_asyncio.subprocess = asyncio.subprocess
-        mock_asyncio.wait_for = asyncio.wait_for
 
         result = await answer_question("test question", [])
 
