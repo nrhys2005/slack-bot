@@ -961,6 +961,9 @@ async def _run_chat_question_and_report(
 
         if answer:
             answer, was_redacted = redact_output(answer)
+            # Slack chat.postMessage의 text 필드는 최대 4000자
+            if len(answer) > 3900:
+                answer = answer[:3900] + "\n\n... (truncated)"
             if was_redacted:
                 answer += (
                     "\n\n:lock: 일부 민감 정보가 보안 정책에 의해 마스킹되었습니다."

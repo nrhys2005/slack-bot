@@ -221,10 +221,42 @@ async def test_answer_question_success():
     with patch("slack_bot.chat.asyncio") as mock_asyncio:
         mock_asyncio.create_subprocess_exec = AsyncMock(return_value=proc)
         mock_asyncio.subprocess = asyncio.subprocess
+        mock_asyncio.wait_for = asyncio.wait_for
+        mock_asyncio.TimeoutError = asyncio.TimeoutError
 
         result = await answer_question("test question", [])
 
     assert result == "test answer"
+
+
+@pytest.mark.asyncio
+async def test_answer_question_safety_timeout():
+    """chat.py: CHAT_SAFETY_TIMEOUT 초과 시 프로세스를 죽이고 안전 한계 메시지 반환."""
+    from slack_bot.chat import answer_question
+
+    proc = MagicMock()
+    proc.returncode = None
+    proc.kill = MagicMock()
+
+    async def _communicate_cleanup():
+        return b"", b""
+
+    proc.communicate = _communicate_cleanup
+
+    async def fake_wait_for(coro, timeout):
+        coro.close()
+        raise asyncio.TimeoutError()
+
+    with patch("slack_bot.chat.asyncio") as mock_asyncio:
+        mock_asyncio.create_subprocess_exec = AsyncMock(return_value=proc)
+        mock_asyncio.subprocess = asyncio.subprocess
+        mock_asyncio.TimeoutError = asyncio.TimeoutError
+        mock_asyncio.wait_for = fake_wait_for
+
+        result = await answer_question("test question", [])
+
+    proc.kill.assert_called_once()
+    assert "안전 한계" in result
 
 
 # ---------------------------------------------------------------------------

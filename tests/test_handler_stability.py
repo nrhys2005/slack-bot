@@ -217,6 +217,45 @@ class TestRunChatQuestionAndReport:
         assert "답변 본문" in kwargs["text"]
 
     @pytest.mark.asyncio
+    async def test_truncates_long_answer_for_slack_limit(self):
+        """Slack text 필드 4000자 제한을 넘는 답변은 3900자에서 잘라낸다."""
+        from slack_bot.handlers import _run_chat_question_and_report
+
+        sem = asyncio.Semaphore(1)
+        app = MagicMock()
+        app.client.chat_postMessage = AsyncMock()
+
+        task_manager = MagicMock()
+        task = MagicMock()
+        task.task_id = "044"
+        task.status = "running"
+
+        long_answer = "가" * 5000
+
+        with patch(
+            "slack_bot.handlers.answer_question",
+            new_callable=AsyncMock,
+            return_value=long_answer,
+        ):
+            await _run_chat_question_and_report(
+                app,
+                task_manager=task_manager,
+                task=task,
+                question="질문",
+                tasks=[],
+                thread_history=[],
+                projects={},
+                target_project=None,
+                channel="C123",
+                thread_ts="1234.5678",
+                semaphore=sem,
+            )
+
+        kwargs = app.client.chat_postMessage.call_args.kwargs
+        assert len(kwargs["text"]) < 4000
+        assert "(truncated)" in kwargs["text"]
+
+    @pytest.mark.asyncio
     async def test_reports_cancellation_when_stopped(self):
         from slack_bot.handlers import _run_chat_question_and_report
 
