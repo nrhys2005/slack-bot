@@ -139,11 +139,15 @@ uv run slack-bot
 2. **Socket Mode** 활성화 → App-Level Token 발급 (`xapp-...`)
 3. **Interactivity** 활성화 (Socket Mode에서 자동, 확인 버튼용)
 4. **Event Subscriptions** → Subscribe to bot events: `app_mention`, `message.im`
-5. **OAuth & Permissions** → Bot Token Scopes:
+5. **Slash Commands** → `/restart`, `/stop` 등록 (Request URL은 Socket Mode 사용 시 비워둠)
+   - `/restart` — 봇 재시작 확인 버튼
+   - `/stop` — 인자 있으면 해당 태스크 중단, 없으면 실행 중 태스크 목록
+6. **OAuth & Permissions** → Bot Token Scopes:
 
 | Scope | 용도 |
 |-------|------|
 | `chat:write` | 메시지 전송 |
+| `commands` | 슬래시 커맨드 수신 (`/restart`, `/stop`) |
 | `app_mentions:read` | @멘션 이벤트 수신 |
 | `channels:history` | public 채널 스레드 이력 |
 | `groups:history` | private 채널 스레드 이력 |
@@ -151,7 +155,7 @@ uv run slack-bot
 | `im:history` | 1:1 DM 스레드 이력 |
 | `reactions:write` | 응답 중 리액션 표시 |
 
-> 스코프 추가 후 워크스페이스에 앱을 **재설치**해야 새 권한이 토큰에 반영됩니다.
+> 스코프나 슬래시 커맨드 추가 후에는 워크스페이스에 앱을 **재설치**해야 새 권한이 토큰에 반영됩니다. `/restart`가 DM에서 무반응이면 대부분 재설치 누락이 원인.
 
 ## 구조
 

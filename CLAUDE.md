@@ -136,6 +136,7 @@ pyproject.toml         # 의존성 및 스크립트 정의
 ### handlers.py
 - `register_handlers(app, task_manager)`: 앱 시작 시 프로젝트 로드
 - `app_mention` / `message(DM)` → 통합 `_handle_message()` → 인텐트별 분기
+- **슬래시 커맨드** `/restart`, `/stop`: Slack에 정식 등록된 슬래시 커맨드. `app_mention`/`message`가 아닌 `slash_commands` 페이로드로 도착하므로 별도 `@app.command(...)` 핸들러로 처리한다. 내부에서 `_handle_admin_intent`/`_handle_task_control`로 위임
 - 인텐트별 처리(모두 즉시 시작 알림 + 백그라운드 실행):
   - command → `_run_and_report` (`run_claude`)
   - shell_exec → `_run_shell_and_report`
@@ -198,4 +199,6 @@ pyproject.toml         # 의존성 및 스크립트 정의
 - **Socket Mode** 활성화
 - **Interactivity** 활성화 (Socket Mode에서 자동, 확인 버튼용)
 - **Event Subscriptions** → Subscribe to bot events: `app_mention`, `message.im`
-- **Bot Token Scopes**: `chat:write`, `files:write`, `app_mentions:read`, `channels:history`, `groups:history`, `mpim:history`, `im:history`, `reactions:write` — 스코프 추가 후 앱 재설치 필요
+- **Slash Commands**: `/restart`, `/stop` 등록 (Socket Mode에서는 Request URL 불필요)
+- **Bot Token Scopes**: `chat:write`, `commands`, `files:write`, `app_mentions:read`, `channels:history`, `groups:history`, `mpim:history`, `im:history`, `reactions:write` — 스코프/슬래시 커맨드 추가 후 앱 재설치 필요
+  - `commands` 스코프가 누락되거나 재설치를 빠뜨리면 `/restart`/`/stop` DM 입력이 무반응이 된다 — Slack이 슬래시로 가로채지만 봇에 페이로드가 도달하지 않음
