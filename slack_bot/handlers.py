@@ -588,13 +588,20 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
     # 입장에서는 입력해도 아무 일도 일어나지 않는다.
 
     def _slash_say_factory(client, channel: str):
-        """슬래시 커맨드 컨텍스트에서 `say(...)`를 흉내내는 콜러블."""
+        """슬래시 커맨드 컨텍스트에서 `say(...)`를 흉내내는 콜러블.
+
+        slash 컨텍스트엔 thread가 없으므로 호출자가 `thread_ts=""`로 전달해도
+        Slack API가 잘못된 값을 받지 않도록 None/빈 문자열을 필터링한다.
+        """
 
         async def _say(text: str | None = None, **kwargs):
+            clean_kwargs = {
+                k: v for k, v in kwargs.items() if v is not None and v != ""
+            }
             return await client.chat_postMessage(
                 channel=channel,
                 text=text or "",
-                **kwargs,
+                **clean_kwargs,
             )
 
         return _say
@@ -609,7 +616,9 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
             return
         intent = Intent(type="admin", command="restart", raw_text="/restart")
         say = _slash_say_factory(client, channel)
-        await _handle_admin_intent(intent, user_id, channel, None, say)
+        # _handle_admin_intent는 thread_ts: str을 기대 — slash엔 thread가
+        # 없으므로 ""를 넘기고, 위 팩토리에서 chat_postMessage 호출 시 걸러낸다.
+        await _handle_admin_intent(intent, user_id, channel, "", say)
 
     @app.command("/stop")
     async def handle_slash_stop(ack, body, client):
@@ -631,7 +640,7 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
         else:
             intent = Intent(type="task_control", command="list", raw_text="/stop")
         say = _slash_say_factory(client, channel)
-        await _handle_task_control(intent, user_id, channel, None, say)
+        await _handle_task_control(intent, user_id, channel, "", say)
 
     # ----------------------------------------------------------------
     # 버튼 액션 핸들러 (확인/취소)

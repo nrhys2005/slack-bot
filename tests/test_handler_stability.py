@@ -346,6 +346,8 @@ class TestSlashCommandRestart:
         # 확인 버튼 블록이 포함되었는지 (action_id로 확인)
         blocks_text = str(call_kwargs.get("blocks", []))
         assert "confirm_restart" in blocks_text
+        # slash 컨텍스트엔 thread가 없으므로 thread_ts가 API에 도달하지 않아야 함
+        assert "thread_ts" not in call_kwargs
 
 
 class TestSlashCommandStop:
