@@ -110,7 +110,7 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
                     channel_type=channel_type,
                 )
             elif intent.type == "unknown_shell":
-                await _handle_unknown_shell(intent, channel, thread_ts, say)
+                await _handle_unknown_shell(intent, thread_ts, say)
             else:
                 await say(
                     "무엇을 도와드릴까요? 프로젝트 명령 실행, 상태 확인, 질문 등을 할 수 있습니다.",
@@ -295,7 +295,6 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
 
     async def _handle_unknown_shell(
         intent: Intent,
-        channel: str,
         thread_ts: str,
         say,
     ) -> None:

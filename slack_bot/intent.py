@@ -282,13 +282,25 @@ def _detect_project(
             for word in desc_words:
                 lower_word = word.lower()
                 if word.isascii():
-                    if re.search(rf"\b{re.escape(lower_word)}\b", lower):
+                    # \b는 \w(영숫자/언더스코어)와 \W 사이 경계만 인식하므로
+                    # "C#" / ".NET"처럼 비단어 문자로 시작·끝나는 키워드 양 끝에
+                    # 무조건 \b를 붙이면 매칭 자체가 실패한다. 각 끝의 문자가
+                    # 단어 문자일 때만 선택적으로 경계를 부여한다.
+                    left = r"\b" if _is_word_char(lower_word[0]) else ""
+                    right = r"\b" if _is_word_char(lower_word[-1]) else ""
+                    pattern = f"{left}{re.escape(lower_word)}{right}"
+                    if re.search(pattern, lower):
                         return name
                 else:
                     if lower_word in lower:
                         return name
 
     return ""
+
+
+def _is_word_char(ch: str) -> bool:
+    """파이썬 정규식 \\w가 매칭하는 ASCII 문자(영숫자/언더스코어)인지."""
+    return ch.isalnum() or ch == "_"
 
 
 def _detect_command(

@@ -50,6 +50,23 @@ class TestAsciiDescriptionWordBoundary:
         # "RA" 또는 "위키"로 wiki가 잡혀야 함
         assert i.project == "wiki"
 
+    def test_keyword_with_non_word_boundary_chars_matches(self):
+        """`C#`, `.NET`처럼 비단어 문자로 시작/끝나는 키워드도 매칭되어야 한다.
+
+        \\b는 \\w와 \\W 사이만 잡으므로 양 끝에 무조건 \\b를 붙이면 매칭 자체가
+        실패한다 — 끝 문자가 단어 문자일 때만 선택적으로 경계를 부여한다.
+        """
+        projects = {
+            "csharp-app": ProjectConfig(
+                name="csharp-app",
+                path="/tmp/csharp",
+                description="C# 백엔드",
+            ),
+        }
+        # "C#" 키워드는 # 가 비단어 문자라 우측 \b가 붙으면 안 됨
+        i = parse_intent("C# 백엔드 상태 어때?", projects)
+        assert i.project == "csharp-app"
+
 
 class TestUnknownShellGuard:
     """셸 명령 모양인데 프로젝트 매칭 실패 시 unknown_shell로 빠르게 차단."""
