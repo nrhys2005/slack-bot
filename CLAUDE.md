@@ -115,7 +115,9 @@ pyproject.toml         # 의존성 및 스크립트 정의
 
 ### intent.py
 - `parse_intent(text, projects) -> Intent` — 규칙 기반 인텐트 파싱
-- Intent 타입: command, status, question, task_control, db_query (export 플래그 포함), admin
+- Intent 타입: command, shell_exec, status, question, task_control, db_query (export 플래그 포함), admin, unknown_shell
+- `unknown_shell`: 트리거 동사 + 셸 hint(`uv `, `python ` 등)는 있는데 프로젝트가 매칭 안 된 케이스. 곧바로 에러 응답으로 차단하지 않으면 question으로 흘러가 `claude -p`가 다중행 셸 명령을 "질문"으로 받아 1시간 안전 한계까지 헛돈다
+- description 키워드 매칭: ASCII 단어는 단어 경계(`\b`) 요구. `"RA"` 같은 2글자 약어가 `"trader"`의 부분 문자열에 매칭되어 엉뚱한 프로젝트로 라우팅되는 사고 방지. 한국어/CJK는 단어 경계 개념이 모호하므로 부분 문자열 매칭 유지
 - 프로젝트명 매칭: 이름 직접 매칭 → description 키워드 매칭
 - 명령어 매핑: 한국어 ("하네스", "리뷰") → 영문 ("harness", "review")
 - 이슈 ID (`[A-Z]+-\d+`), 태스크 ID (`\d{3}`) 자동 추출
