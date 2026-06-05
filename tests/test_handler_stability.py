@@ -322,6 +322,75 @@ def _register_slash_handlers():
     return commands, task_manager
 
 
+class TestUnknownShellRouting:
+    """unknown_shell 인텐트가 즉시 에러 메시지로 응답하는지 — 1시간 안전망 방지."""
+
+    @pytest.mark.asyncio
+    async def test_unknown_shell_responds_immediately_with_project_list(self):
+        """등록 안 된 프로젝트 + 셸 명령 입력 시 즉시 에러 응답 (백그라운드 미진입)."""
+        from slack_bot.handlers import register_handlers
+
+        events: dict = {}
+
+        def capture_event(event_type):
+            def decorator(func):
+                events[event_type] = func
+                return func
+            return decorator
+
+        app = MagicMock()
+        app.event = capture_event
+        app.action = lambda action_id: lambda f: f
+        app.command = lambda name: lambda f: f
+
+        task_manager = MagicMock()
+        task_manager.get_running_tasks.return_value = []
+        task_manager.get_tasks_for_channel.return_value = []
+        task_manager.cleanup_old = MagicMock()
+
+        from slack_bot.config import AppConfig, ProjectConfig, SecurityConfig
+
+        with patch("slack_bot.handlers.load_projects") as mock_load:
+            mock_load.return_value = AppConfig(
+                projects={
+                    "ra-backend": ProjectConfig(
+                        name="ra-backend",
+                        path="/tmp/ra-backend",
+                        description="RA 백엔드",
+                    ),
+                },
+                security=SecurityConfig(allowed_users={"admin": ["*"]}),
+            )
+            register_handlers(app, task_manager)
+
+        handler = events.get("app_mention")
+        assert handler is not None
+
+        say = AsyncMock()
+        client = MagicMock()
+        client.reactions_add = AsyncMock()
+        client.reactions_remove = AsyncMock()
+
+        event = {
+            "text": "<@U0BOT> trader 에서\n  uv run python -m scripts.foo 실행해",
+            "ts": "1000.0",
+            "user": "U1",
+            "channel": "C123",
+            "channel_type": "channel",
+        }
+
+        await handler(event=event, say=say, client=client)
+
+        # 즉시 에러 응답 (백그라운드 클로드 호출 없이)
+        say.assert_awaited()
+        msg_text = " ".join(
+            str(call.args[0]) if call.args else str(call.kwargs.get("text", ""))
+            for call in say.await_args_list
+        )
+        assert "프로젝트를 식별하지 못했습니다" in msg_text or "셸 명령" in msg_text
+        assert "ra-backend" in msg_text
+
+
 class TestSlashCommandRestart:
     """/restart 슬래시 커맨드 핸들러 — Slack에 등록된 명령이 DM/채널에서 동작하도록."""
 

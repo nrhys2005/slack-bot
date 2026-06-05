@@ -11,7 +11,9 @@ class Intent:
     """사용자 메시지에서 파싱된 의도."""
 
     type: (
-        str  # "command" | "status" | "question" | "task_control" | "db_query" | "admin"
+        # "command" | "shell_exec" | "status" | "question" | "task_control"
+        # | "db_query" | "admin" | "unknown_shell"
+        str
     )
     project: str = ""  # 식별된 프로젝트명
     command: str = ""  # 실행할 명령어 또는 task_control 동작 (list/stop)
@@ -193,7 +195,17 @@ def parse_intent(
             raw_text=normalized,
         )
 
-    # 7. 기본: 일반 질문
+    # 7. 셸 명령처럼 보이는데 프로젝트가 매칭되지 않은 경우 — 명확한 에러로 차단.
+    #    트리거 동사 + 어떤 줄이라도 알려진 셸 hint 접두사(`uv `, `python ` 등)로
+    #    시작하면 사용자는 셸 실행을 시도한 것. 이대로 question으로 흘리면
+    #    claude -p가 다중행 셸 명령을 "질문"으로 받아 1시간 안전 한계에 도달한다.
+    if _has_trigger and not matched_project and _looks_like_shell_attempt(normalized):
+        return Intent(
+            type="unknown_shell",
+            raw_text=normalized,
+        )
+
+    # 8. 기본: 일반 질문
     return Intent(
         type="question",
         project=matched_project or "",
@@ -259,17 +271,36 @@ def _detect_project(
         if name.lower() in lower:
             return name
 
-    # description 키워드 매칭 (3글자 이상 단어만, 짧은 단어의 오매칭 방지)
-    # 괄호, 특수문자 제거 후 매칭
+    # description 키워드 매칭. 괄호/특수문자 제거 후 단어 단위 비교.
+    # - ASCII 단어: 단어 경계(\b) 요구. "RA"가 "trader"의 부분 문자열에
+    #   매칭되어 엉뚱한 프로젝트로 라우팅되는 사고 방지.
+    # - 한국어/CJK 단어: 단어 경계 개념이 모호하므로 부분 문자열 매칭 유지.
     for name, cfg in projects.items():
         if cfg.description:
             clean_desc = re.sub(r"[()（）\[\]「」]", " ", cfg.description)
             desc_words = [w for w in clean_desc.split() if len(w) >= 2]
             for word in desc_words:
-                if word.lower() in lower:
-                    return name
+                lower_word = word.lower()
+                if word.isascii():
+                    # \b는 \w(영숫자/언더스코어)와 \W 사이 경계만 인식하므로
+                    # "C#" / ".NET"처럼 비단어 문자로 시작·끝나는 키워드 양 끝에
+                    # 무조건 \b를 붙이면 매칭 자체가 실패한다. 각 끝의 문자가
+                    # 단어 문자일 때만 선택적으로 경계를 부여한다.
+                    left = r"\b" if _is_word_char(lower_word[0]) else ""
+                    right = r"\b" if _is_word_char(lower_word[-1]) else ""
+                    pattern = f"{left}{re.escape(lower_word)}{right}"
+                    if re.search(pattern, lower):
+                        return name
+                else:
+                    if lower_word in lower:
+                        return name
 
     return ""
+
+
+def _is_word_char(ch: str) -> bool:
+    """파이썬 정규식 \\w가 매칭하는 ASCII 문자(영숫자/언더스코어)인지."""
+    return ch.isalnum() or ch == "_"
 
 
 def _detect_command(
@@ -349,6 +380,35 @@ _SHELL_FILLER_RE = re.compile(
 # "결과는 ..." 이후 문장 제거 (마침표, 쉼표, ..  등 구분자 포함)
 _TRAILING_COMMENT_RE = re.compile(r"[.。,，]+\s*결과는.*$")
 
+# 셸 명령 hint — 명령 추출과 unknown_shell 감지에서 공통으로 사용한다.
+# 슬래시 커맨드(`/stop` 등)와 충돌하지 않도록 `/`는 hint에 포함시키지 않는다.
+_SHELL_CMD_HINTS = (
+    "uv ", "python ", "python3 ", "npm ", "node ", "bash ", "sh ", "pip ",
+    "pip3 ", "git ", "docker ", "make ", "cargo ", "go ", "java ",
+    "cat ", "ls ", "echo ", "cd ", "mkdir ", "rm ", "cp ", "mv ",
+    "./",
+)
+
+
+def _looks_like_shell_attempt(text: str) -> bool:
+    """텍스트가 셸 명령 실행 시도로 보이면 True.
+
+    감지 조건(둘 중 하나라도):
+    - 어떤 줄이라도 셸 hint(`uv `, `python ` 등)로 시작 — 다중행 입력 대응
+    - 어떤 줄에서 공백 뒤에 hint가 등장 — `"foobar에서 python -m pytest"`처럼
+      프로젝트명이 앞에 오고 셸 명령이 뒤에 오는 단행 입력 대응
+
+    hint는 모두 끝에 공백(`"python "`)을 포함하므로 `"python으로"` 같은 자연어
+    어미와 충돌하지 않는다.
+    """
+    for line in text.split("\n"):
+        stripped = line.strip().lower()
+        if any(stripped.startswith(hint) for hint in _SHELL_CMD_HINTS):
+            return True
+        if any(f" {hint}" in stripped for hint in _SHELL_CMD_HINTS):
+            return True
+    return False
+
 
 def _extract_shell_command(
     text: str,
@@ -384,12 +444,6 @@ def _extract_shell_command(
         return ""
 
     # 셸 명령처럼 보이는지 확인 — 알려진 커맨드 접두사 또는 경로 포함
-    _SHELL_CMD_HINTS = (
-        "uv ", "python ", "npm ", "node ", "bash ", "sh ", "pip ",
-        "git ", "docker ", "make ", "cargo ", "go ", "java ",
-        "cat ", "ls ", "echo ", "cd ", "mkdir ", "rm ", "cp ", "mv ",
-        "./", "/",
-    )
     lower_remaining = remaining.lower()
     if not any(lower_remaining.startswith(hint) for hint in _SHELL_CMD_HINTS):
         return ""

@@ -109,6 +109,8 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
                     is_thread=is_thread,
                     channel_type=channel_type,
                 )
+            elif intent.type == "unknown_shell":
+                await _handle_unknown_shell(intent, thread_ts, say)
             else:
                 await say(
                     "무엇을 도와드릴까요? 프로젝트 명령 실행, 상태 확인, 질문 등을 할 수 있습니다.",
@@ -290,6 +292,31 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
             f"(태스크 ID: {task.task_id})",
             thread_ts=thread_ts,
         )
+
+    async def _handle_unknown_shell(
+        intent: Intent,
+        thread_ts: str,
+        say,
+    ) -> None:
+        """셸 명령처럼 보이지만 프로젝트를 식별하지 못한 경우 — 즉시 에러로 응답.
+
+        이 경로가 없으면 question으로 흘러가 claude -p가 다중행 셸 명령을
+        "질문"으로 받아 답을 못 찾고 1시간 안전 한계에 도달한다.
+        """
+        if projects:
+            project_list = ", ".join(f"`{n}`" for n in projects)
+            text = (
+                ":warning: 셸 명령을 실행하려는 것으로 보이지만 프로젝트를 "
+                "식별하지 못했습니다.\n"
+                f"등록된 프로젝트: {project_list}\n"
+                "형식: `<프로젝트명>에서 <셸 명령> 실행해줘`"
+            )
+        else:
+            text = (
+                ":warning: 셸 명령을 실행하려는 것으로 보이지만 등록된 "
+                "프로젝트가 없습니다. `projects.yaml`을 확인해주세요."
+            )
+        await say(text, thread_ts=thread_ts)
 
     async def _handle_shell_exec_intent(
         intent: Intent,
