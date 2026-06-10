@@ -529,11 +529,19 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
             thread_ts=thread_ts,
         )
 
-        await say(
+        # 답변 도착 시 삭제할 수 있도록 시작 메시지의 ts를 보관한다.
+        # say() 결과가 dict-like가 아닐 수도 있어 방어적으로 처리.
+        progress_response = await say(
             f":mag: 질문 처리를 시작합니다. "
             f"(ID: {chat_task.task_id}, 취소: `/stop {chat_task.task_id}`)",
             thread_ts=thread_ts,
         )
+        progress_ts: str | None = None
+        try:
+            if progress_response is not None:
+                progress_ts = progress_response.get("ts")
+        except Exception:
+            progress_ts = None
 
         bg_task = asyncio.create_task(
             _run_chat_question_and_report(
@@ -548,6 +556,7 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
                 channel=channel,
                 thread_ts=thread_ts,
                 semaphore=_chat_semaphore,
+                progress_ts=progress_ts,
             )
         )
         _background_tasks.add(bg_task)
@@ -1026,8 +1035,23 @@ async def _run_chat_question_and_report(
     channel: str,
     thread_ts: str,
     semaphore: asyncio.Semaphore,
+    progress_ts: str | None = None,
 ) -> None:
-    """answer_question을 백그라운드에서 실행하고 결과를 스레드에 보고한다."""
+    """answer_question을 백그라운드에서 실행하고 결과를 스레드에 보고한다.
+
+    progress_ts가 주어지면 결과/취소/에러 메시지를 보낸 직후 해당 시작 알림 메시지를
+    삭제한다. 시작 알림이 답변 옆에 남아 있으면 채널이 지저분해 보이기 때문이다.
+    삭제는 best-effort — 실패해도 사용자 흐름에는 영향이 없어야 한다.
+    """
+
+    async def _delete_progress() -> None:
+        if not progress_ts:
+            return
+        try:
+            await app.client.chat_delete(channel=channel, ts=progress_ts)
+        except Exception:
+            logger.warning("진행 메시지 삭제 실패 (ts=%s)", progress_ts, exc_info=True)
+
     try:
         async with semaphore:
             answer = await answer_question(
@@ -1046,6 +1070,7 @@ async def _run_chat_question_and_report(
                 thread_ts=thread_ts,
                 text=":octagonal_sign: 질문 처리가 취소되었습니다.",
             )
+            await _delete_progress()
             return
 
         task_manager.complete_task(task.task_id, True)
@@ -1065,6 +1090,7 @@ async def _run_chat_question_and_report(
             thread_ts=thread_ts,
             text=answer or "_출력 없음_",
         )
+        await _delete_progress()
     except Exception:
         logger.exception("질문 답변 처리 중 에러")
         task_manager.complete_task(task.task_id, False)
@@ -1073,6 +1099,7 @@ async def _run_chat_question_and_report(
             thread_ts=thread_ts,
             text=":warning: 질문 처리 중 오류가 발생했습니다.",
         )
+        await _delete_progress()
 
 
 async def _run_shell_and_report(
