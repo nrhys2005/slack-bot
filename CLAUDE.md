@@ -54,9 +54,11 @@ pyproject.toml         # 의존성 및 스크립트 정의
   → handlers._handle_question_intent
     → TaskManager.create_task("chat") — 추적 시작
     → 즉시 시작 알림: ":mag: 질문 처리를 시작합니다. (ID: NNN, 취소: `/stop NNN`)"
+      — 알림 메시지의 ts를 보관해두고, 답변/취소/에러 메시지를 보낸 직후
+        `chat.chat_delete`로 삭제해 채널에 흔적을 남기지 않는다 (best-effort).
     → asyncio.create_task()로 _run_chat_question_and_report 백그라운드 실행
       → chat.answer_question() — target_project 코드/로그/위키/DB를 읽어 답변 생성
-      → 완료 시 같은 스레드에 결과 메시지 전송
+      → 완료 시 같은 스레드에 결과 메시지 전송 후 시작 알림 삭제
 ```
 
 ### 태스크 제어

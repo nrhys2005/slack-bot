@@ -291,6 +291,162 @@ class TestRunChatQuestionAndReport:
         kwargs = app.client.chat_postMessage.call_args.kwargs
         assert ":octagonal_sign:" in kwargs["text"]
 
+    @pytest.mark.asyncio
+    async def test_deletes_progress_message_after_answer(self):
+        """progress_ts가 주어지면 답변 도착 후 시작 알림 메시지를 삭제한다."""
+        from slack_bot.handlers import _run_chat_question_and_report
+
+        sem = asyncio.Semaphore(1)
+        app = MagicMock()
+        app.client.chat_postMessage = AsyncMock()
+        app.client.chat_delete = AsyncMock()
+
+        task_manager = MagicMock()
+        task = MagicMock()
+        task.task_id = "045"
+        task.status = "running"
+
+        with patch(
+            "slack_bot.handlers.answer_question",
+            new_callable=AsyncMock,
+            return_value="답변 본문",
+        ):
+            await _run_chat_question_and_report(
+                app,
+                task_manager=task_manager,
+                task=task,
+                question="질문",
+                tasks=[],
+                thread_history=[],
+                projects={},
+                target_project=None,
+                channel="C123",
+                thread_ts="1234.5678",
+                semaphore=sem,
+                progress_ts="9999.0001",
+            )
+
+        app.client.chat_postMessage.assert_awaited_once()
+        app.client.chat_delete.assert_awaited_once_with(
+            channel="C123", ts="9999.0001"
+        )
+
+    @pytest.mark.asyncio
+    async def test_deletes_progress_message_on_cancellation(self):
+        """취소 메시지를 보낸 직후에도 시작 알림 메시지를 삭제한다."""
+        from slack_bot.handlers import _run_chat_question_and_report
+
+        sem = asyncio.Semaphore(1)
+        app = MagicMock()
+        app.client.chat_postMessage = AsyncMock()
+        app.client.chat_delete = AsyncMock()
+
+        task_manager = MagicMock()
+        task = MagicMock()
+        task.task_id = "046"
+        task.status = "stopped"
+
+        with patch(
+            "slack_bot.handlers.answer_question",
+            new_callable=AsyncMock,
+            return_value="중간 답변",
+        ):
+            await _run_chat_question_and_report(
+                app,
+                task_manager=task_manager,
+                task=task,
+                question="질문",
+                tasks=[],
+                thread_history=[],
+                projects={},
+                target_project=None,
+                channel="C123",
+                thread_ts="1234.5678",
+                semaphore=sem,
+                progress_ts="9999.0002",
+            )
+
+        app.client.chat_delete.assert_awaited_once_with(
+            channel="C123", ts="9999.0002"
+        )
+
+    @pytest.mark.asyncio
+    async def test_skips_delete_when_progress_ts_none(self):
+        """progress_ts가 None이면 chat_delete를 호출하지 않는다 (하위호환)."""
+        from slack_bot.handlers import _run_chat_question_and_report
+
+        sem = asyncio.Semaphore(1)
+        app = MagicMock()
+        app.client.chat_postMessage = AsyncMock()
+        app.client.chat_delete = AsyncMock()
+
+        task_manager = MagicMock()
+        task = MagicMock()
+        task.task_id = "047"
+        task.status = "running"
+
+        with patch(
+            "slack_bot.handlers.answer_question",
+            new_callable=AsyncMock,
+            return_value="답변 본문",
+        ):
+            await _run_chat_question_and_report(
+                app,
+                task_manager=task_manager,
+                task=task,
+                question="질문",
+                tasks=[],
+                thread_history=[],
+                projects={},
+                target_project=None,
+                channel="C123",
+                thread_ts="1234.5678",
+                semaphore=sem,
+            )
+
+        app.client.chat_delete.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_delete_failure_does_not_break_flow(self):
+        """chat_delete가 실패해도 답변 흐름은 정상 종료된다."""
+        from slack_bot.handlers import _run_chat_question_and_report
+
+        sem = asyncio.Semaphore(1)
+        app = MagicMock()
+        app.client.chat_postMessage = AsyncMock()
+        app.client.chat_delete = AsyncMock(
+            side_effect=RuntimeError("delete failed")
+        )
+
+        task_manager = MagicMock()
+        task = MagicMock()
+        task.task_id = "048"
+        task.status = "running"
+
+        with patch(
+            "slack_bot.handlers.answer_question",
+            new_callable=AsyncMock,
+            return_value="답변 본문",
+        ):
+            # 예외가 흐름을 깨지 않아야 함
+            await _run_chat_question_and_report(
+                app,
+                task_manager=task_manager,
+                task=task,
+                question="질문",
+                tasks=[],
+                thread_history=[],
+                projects={},
+                target_project=None,
+                channel="C123",
+                thread_ts="1234.5678",
+                semaphore=sem,
+                progress_ts="9999.0003",
+            )
+
+        task_manager.complete_task.assert_called_once_with("048", True)
+        app.client.chat_postMessage.assert_awaited_once()
+
 
 def _register_slash_handlers():
     """register_handlers를 mock app으로 호출하고 @app.command 콜백을 캡쳐."""
