@@ -94,6 +94,19 @@ git checkout main && git pull origin main
 1. `gh pr create`로 PR 생성 (base: `main`, head: `feature/{이슈ID}-*`)
 2. PR URL을 사용자에게 보고
 
+#### PR 본문 작성 규칙
+
+- **본문은 임시 파일로 작성한 뒤 `--body-file`로 넘긴다.** 셸 이스케이프 사고 방지.
+  ```bash
+  # 1) Write 도구로 본문을 임시 파일(예: /tmp/pr-body-{이슈ID}.md)에 작성
+  # 2) gh pr create --title "..." --body-file /tmp/pr-body-{이슈ID}.md
+  # 3) 작업 후 파일 정리
+  ```
+  `gh pr create --body "$(cat <<'EOF' ... EOF)"` 형태로 HEREDOC을 쓰는 경우에도 코드 펜스의 백틱을 **절대 `\`\`\`` 처럼 백슬래시로 이스케이프하지 않는다.** 단일 인용 HEREDOC은 백틱을 그대로 보존하므로 이스케이프가 불필요하다. 백슬래시 이스케이프가 들어가면 GitHub에서 코드 블럭이 렌더링되지 않아 들여쓰기가 모두 무너진다.
+- 코드 블럭은 반드시 ` ```python ` 같이 줄 시작에서 시작하고, 내부 들여쓰기(공백 4개 등)는 원본 코드 그대로 유지한다.
+- **`🤖 Generated with [Claude Code](https://claude.com/claude-code)` 푸터를 본문에 절대 추가하지 않는다.** 사용자가 명시적으로 요청한 경우에만 추가한다.
+- `Co-Authored-By: Claude ...` 같은 자동 서명 라인도 PR 본문에 넣지 않는다 (커밋 메시지는 별개).
+
 ### Phase 5: Memory Layer 기록
 
 작업 결과를 `.claude/memory.json`에 추가한다.
