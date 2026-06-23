@@ -8,6 +8,7 @@ import re
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
 
 from slack_bolt.async_app import AsyncApp
 
@@ -24,6 +25,18 @@ logger = logging.getLogger(__name__)
 MAX_CONCURRENT_CHAT = 3
 MAX_CONCURRENT_TASK = 3
 
+# `claude auth login`이 인증 URL을 출력한 뒤 stdin으로 입력받는 코드를
+# Slack 메시지로 이어 받기 위해 사용하는 세션 상태.
+@dataclass
+class AuthSession:
+    proc: asyncio.subprocess.Process
+    user_id: str
+    channel: str
+    thread_ts: str   # URL 메시지가 게시된 스레드 (사용자 응답이 도착하는 곳)
+    msg_ts: str      # 확인 버튼 메시지의 ts (세션 키 일부)
+    code_future: asyncio.Future
+    created_at: float
+
 
 def _log_task_exception(t: asyncio.Task) -> None:
     """백그라운드 태스크의 미처리 예외를 로깅."""
@@ -38,6 +51,32 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
     _chat_semaphore = asyncio.Semaphore(MAX_CONCURRENT_CHAT)
     _task_semaphore = asyncio.Semaphore(MAX_CONCURRENT_TASK)
     _background_tasks: set[asyncio.Task] = set()
+
+    # `claude auth login` 진행 중 코드 입력을 대기하는 세션들.
+    # key = f"{channel}:{msg_ts}" (msg_ts는 확인 버튼 메시지의 ts).
+    _pending_auth_sessions: dict[str, AuthSession] = {}
+    # 테스트가 진행 중인 세션에 접근할 수 있도록 app에 노출 (production no-op).
+    app._pending_auth_sessions = _pending_auth_sessions
+
+    def _find_auth_session_for_message(
+        channel: str,
+        thread_ts: str,
+        user_id: str,
+        channel_type: str,
+    ) -> AuthSession | None:
+        """수신 메시지가 진행 중인 인증 세션의 코드 입력인지 판별."""
+        for session in _pending_auth_sessions.values():
+            if session.code_future.done():
+                continue
+            if session.user_id != user_id or session.channel != channel:
+                continue
+            # DM: 스레드가 없어도 동일 사용자의 진행 중 세션을 코드 입력으로 본다.
+            if channel_type == "im":
+                return session
+            # 채널: 인증 URL이 게시된 스레드 안에서만 코드 입력으로 본다.
+            if thread_ts and thread_ts in (session.thread_ts, session.msg_ts):
+                return session
+        return None
 
     app_config = load_projects()
     projects = app_config.projects
@@ -68,6 +107,35 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
                 "무엇을 도와드릴까요? 프로젝트 명령 실행, 상태 확인, 질문 등을 할 수 있습니다.",
                 thread_ts=thread_ts,
             )
+            return
+
+        # `claude auth login` 진행 중이면 이 메시지를 인증 코드로 해석한다.
+        # (intent 파싱이나 reactions 추가보다 먼저 가로채야 정상 흐름과 섞이지 않음)
+        auth_session = _find_auth_session_for_message(
+            channel, thread_ts, user_id, channel_type
+        )
+        if auth_session is not None and not auth_session.code_future.done():
+            code = question.strip()
+            if code.lower() in ("취소", "cancel", "stop"):
+                if auth_session.proc.returncode is None:
+                    try:
+                        auth_session.proc.kill()
+                    except ProcessLookupError:
+                        pass
+                if not auth_session.code_future.done():
+                    auth_session.code_future.set_exception(
+                        asyncio.CancelledError("user cancelled")
+                    )
+                await say(
+                    ":no_entry_sign: Claude CLI 인증을 취소했습니다.",
+                    thread_ts=thread_ts,
+                )
+            else:
+                auth_session.code_future.set_result(code)
+                await say(
+                    ":key: 코드를 받았습니다. 인증을 마무리합니다…",
+                    thread_ts=thread_ts,
+                )
             return
 
         # 즉시 리액션
@@ -905,11 +973,25 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
 
     @app.action("confirm_auth_login")
     async def handle_confirm_auth_login(ack, body, client):
-        """Claude CLI 인증 확인 버튼 클릭."""
+        """Claude CLI 인증 확인 버튼 클릭.
+
+        `claude auth login`은 인증 URL을 출력한 뒤 stdin으로 코드 입력을 기다린다.
+        Slack 메시지로 받은 코드를 stdin에 그대로 적어 인증을 마무리한다.
+        """
         await ack()
 
         channel_id = body["channel"]["id"]
         msg_ts = body["message"]["ts"]
+        user_id = body.get("user", {}).get("id", "") or body.get("user_id", "")
+
+        # 동일 채널/메시지의 기존 세션이 살아 있으면 정리
+        session_key = f"{channel_id}:{msg_ts}"
+        old = _pending_auth_sessions.pop(session_key, None)
+        if old and old.proc.returncode is None:
+            try:
+                old.proc.kill()
+            except ProcessLookupError:
+                pass
 
         await client.chat_update(
             channel=channel_id,
@@ -918,57 +1000,145 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
             blocks=[],
         )
 
+        URL_WAIT_TIMEOUT = 60   # URL이 출력될 때까지의 대기 (초)
+        CODE_WAIT_TIMEOUT = 900  # URL 전달 후 사용자가 코드를 붙여넣을 때까지 (15분)
+        FINALIZE_TIMEOUT = 60   # stdin 전달 후 프로세스 종료 대기 (초)
+
+        proc: asyncio.subprocess.Process | None = None
+        url_event = asyncio.Event()
+        collected_output: list[str] = []
+        url_re = re.compile(r"https?://\S+")
+        first_url: list[str] = []
+
+        async def _read_stream(stream: asyncio.StreamReader) -> None:
+            async for line_bytes in stream:
+                line = line_bytes.decode(errors="replace").strip()
+                if not line:
+                    continue
+                collected_output.append(line)
+                logger.info("claude auth login: %s", line)
+                if not url_event.is_set():
+                    url_match = url_re.search(line)
+                    if url_match:
+                        first_url.append(url_match.group(0))
+                        url_event.set()
+
         try:
-            proc = await asyncio.create_subprocess_exec(
-                "claude",
-                "auth",
-                "login",
-                "--claudeai",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    "claude",
+                    "auth",
+                    "login",
+                    "--claudeai",
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+            except FileNotFoundError:
+                await client.chat_postMessage(
+                    channel=channel_id,
+                    thread_ts=msg_ts,
+                    text=":x: `claude` CLI가 설치되어 있지 않습니다. 먼저 Claude CLI를 설치해주세요.",
+                )
+                return
 
-            AUTH_TIMEOUT = 300  # 5분
+            stdout_task = asyncio.create_task(_read_stream(proc.stdout))
+            stderr_task = asyncio.create_task(_read_stream(proc.stderr))
 
-            url_sent = False
-            collected_output: list[str] = []
+            # 1) URL 출력 대기
+            try:
+                await asyncio.wait_for(url_event.wait(), timeout=URL_WAIT_TIMEOUT)
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+                output = "\n".join(collected_output[-20:])
+                await client.chat_postMessage(
+                    channel=channel_id,
+                    thread_ts=msg_ts,
+                    text=(
+                        f":x: 인증 URL이 출력되지 않았습니다 ({URL_WAIT_TIMEOUT}초). "
+                        f"`claude` CLI 설정을 확인해주세요.\n```\n{output[:2000]}\n```"
+                    ),
+                )
+                return
 
-            url_re = re.compile(r"https?://\S+")
-
-            async def _read_stream(stream: asyncio.StreamReader) -> None:
-                nonlocal url_sent
-                async for line_bytes in stream:
-                    line = line_bytes.decode(errors="replace").strip()
-                    if not line:
-                        continue
-                    collected_output.append(line)
-                    logger.info("claude auth login: %s", line)
-
-                    if not url_sent:
-                        url_match = url_re.search(line)
-                        if url_match:
-                            url = url_match.group(0)
-                            url_sent = True
-                            asyncio.create_task(
-                                client.chat_postMessage(
-                                    channel=channel_id,
-                                    thread_ts=msg_ts,
-                                    text=(
-                                        ":link: 아래 URL을 브라우저에서 열어 인증을 완료하세요:\n"
-                                        f"```\n{url}\n```\n"
-                                        f"_{AUTH_TIMEOUT}초 내에 인증을 완료해주세요._"
-                                    ),
-                                )
-                            )
-
-            await asyncio.wait_for(
-                asyncio.gather(
-                    _read_stream(proc.stdout),
-                    _read_stream(proc.stderr),
-                    proc.wait(),
+            url = first_url[0]
+            await client.chat_postMessage(
+                channel=channel_id,
+                thread_ts=msg_ts,
+                text=(
+                    ":link: 아래 URL을 브라우저에서 열어 인증을 진행하세요:\n"
+                    f"```\n{url}\n```\n"
+                    "인증 후 발급된 *코드를 이 스레드(또는 DM)에 그대로 붙여넣어* 주세요.\n"
+                    f"_{CODE_WAIT_TIMEOUT // 60}분 안에 코드를 입력하지 않으면 취소됩니다._"
                 ),
-                timeout=AUTH_TIMEOUT,
             )
+
+            # 2) Slack에서 코드 입력 대기 (메시지 핸들러가 future를 resolve)
+            loop = asyncio.get_running_loop()
+            code_future: asyncio.Future = loop.create_future()
+            session = AuthSession(
+                proc=proc,
+                user_id=user_id,
+                channel=channel_id,
+                thread_ts=msg_ts,
+                msg_ts=msg_ts,
+                code_future=code_future,
+                created_at=time.time(),
+            )
+            _pending_auth_sessions[session_key] = session
+
+            try:
+                code = await asyncio.wait_for(code_future, timeout=CODE_WAIT_TIMEOUT)
+            except asyncio.TimeoutError:
+                if proc.returncode is None:
+                    proc.kill()
+                    await proc.wait()
+                await client.chat_postMessage(
+                    channel=channel_id,
+                    thread_ts=msg_ts,
+                    text=f":x: 인증 코드 입력 시간이 초과되었습니다 ({CODE_WAIT_TIMEOUT}초). 다시 시도해주세요.",
+                )
+                return
+            except asyncio.CancelledError:
+                # 사용자가 "취소"를 입력한 경로 — 안내 메시지는 메시지 핸들러에서 이미 보냈음
+                if proc.returncode is None:
+                    try:
+                        proc.kill()
+                    except ProcessLookupError:
+                        pass
+                    await proc.wait()
+                return
+            finally:
+                _pending_auth_sessions.pop(session_key, None)
+
+            # 3) stdin에 코드 전달 후 프로세스 종료 대기
+            try:
+                proc.stdin.write(code.encode() + b"\n")
+                await proc.stdin.drain()
+                proc.stdin.close()
+            except (BrokenPipeError, ConnectionResetError):
+                # 프로세스가 이미 종료된 경우
+                pass
+
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=FINALIZE_TIMEOUT)
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+                await client.chat_postMessage(
+                    channel=channel_id,
+                    thread_ts=msg_ts,
+                    text=f":x: 인증 완료 처리 중 시간이 초과되었습니다 ({FINALIZE_TIMEOUT}초).",
+                )
+                return
+
+            # stdout/stderr 수집 마무리 (best-effort)
+            for t in (stdout_task, stderr_task):
+                try:
+                    await asyncio.wait_for(t, timeout=2)
+                except (asyncio.TimeoutError, Exception):
+                    pass
 
             if proc.returncode == 0:
                 await client.chat_postMessage(
@@ -977,33 +1147,28 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
                     text=":white_check_mark: Claude CLI 인증이 완료되었습니다!",
                 )
             else:
-                output = "\n".join(collected_output[-10:])
+                output = "\n".join(collected_output[-15:])
                 await client.chat_postMessage(
                     channel=channel_id,
                     thread_ts=msg_ts,
                     text=f":x: Claude CLI 인증 실패 (exit {proc.returncode}):\n```\n{output[:2000]}\n```",
                 )
 
-        except FileNotFoundError:
-            await client.chat_postMessage(
-                channel=channel_id,
-                thread_ts=msg_ts,
-                text=":x: `claude` CLI가 설치되어 있지 않습니다. 먼저 Claude CLI를 설치해주세요.",
-            )
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.wait()
-            await client.chat_postMessage(
-                channel=channel_id,
-                thread_ts=msg_ts,
-                text=f":x: 인증 시간이 초과되었습니다 ({AUTH_TIMEOUT}초). 다시 시도해주세요.",
-            )
         except Exception as e:
+            logger.exception("claude auth login 처리 중 예외")
+            if proc is not None and proc.returncode is None:
+                try:
+                    proc.kill()
+                    await proc.wait()
+                except ProcessLookupError:
+                    pass
             await client.chat_postMessage(
                 channel=channel_id,
                 thread_ts=msg_ts,
                 text=f":x: Claude CLI 인증 중 에러: {e}",
             )
+        finally:
+            _pending_auth_sessions.pop(session_key, None)
 
     @app.action("cancel_auth_login")
     async def handle_cancel_auth_login(ack, body, client):

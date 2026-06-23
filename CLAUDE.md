@@ -149,6 +149,12 @@ pyproject.toml         # 의존성 및 스크립트 정의
   - task_control → 태스크 목록/중단 (동기 응답)
 - 모든 백그라운드 흐름은 `_chat_semaphore`/`_task_semaphore`로 동시성 제한, `/stop {ID}`로 취소 가능
 - `confirm_execute` / `cancel_execute` 액션 핸들러 (레거시 호환용)
+- `confirm_auth_login` 액션 (claude 로그인 확인 버튼) — 인터랙티브 인증:
+  - `claude auth login --claudeai`를 `stdin=PIPE`로 실행 → stdout에서 URL 추출 → 스레드에 URL + "코드를 붙여넣어 주세요" 안내 게시
+  - `_pending_auth_sessions[f"{channel}:{msg_ts}"]`에 세션 등록 (`AuthSession`은 proc, user_id, channel, thread_ts, msg_ts, code_future, created_at 보유)
+  - `_handle_message` 진입 시 intent 파싱보다 먼저 `_find_auth_session_for_message`로 진행 중 세션 매칭 검사. 매칭되면 메시지 텍스트를 `code_future`로 resolve해 stdin에 기록 (`취소`/`cancel`/`stop`은 CancelledError로 닫고 프로세스 kill). 채널 메시지는 같은 스레드일 때만, DM은 동일 사용자의 진행 중 세션 아무거나 매칭
+  - 타임아웃: URL 출력 60초, 코드 입력 15분, stdin 전달 후 완료 대기 60초
+  - 테스트가 진행 중 세션을 들여다볼 수 있도록 `app._pending_auth_sessions`로도 노출
 
 ### chat.py
 - `answer_question(question, tasks, thread_history, projects, target_project, on_progress, task)` — 질문 답변

@@ -121,74 +121,132 @@ def _make_body(channel_id: str = "C123", msg_ts: str = "1234.5678") -> dict:
     }
 
 
+def _setup_handlers():
+    """`register_handlers`를 호출하고 등록된 action 핸들러를 캡처해서 반환."""
+    from slack_bot.handlers import register_handlers
+
+    app = MagicMock()
+    task_manager = MagicMock()
+    task_manager.get_running_tasks.return_value = []
+    task_manager.cleanup_old = MagicMock()
+
+    handlers: dict = {}
+
+    def capture_action(action_id):
+        def decorator(func):
+            handlers[action_id] = func
+            return func
+        return decorator
+
+    app.action = capture_action
+    app.event = lambda event_type: lambda f: f
+    app.command = lambda cmd: lambda f: f
+
+    with patch("slack_bot.handlers.load_projects") as mock_load:
+        mock_config = MagicMock()
+        mock_config.projects = {}
+        mock_config.security.allowed_users = []
+        mock_load.return_value = mock_config
+        register_handlers(app, task_manager)
+
+    return app, handlers
+
+
+def _make_mock_proc(url_line: bytes, returncode_after_stdin: int):
+    """URL 한 줄을 stdout으로 흘리고, stdin이 닫히면 returncode를 세팅하는 mock proc."""
+    proc = MagicMock()
+    proc.returncode = None
+
+    # stdout: URL 한 줄 후 종료
+    async def fake_stdout():
+        yield url_line
+
+    # stderr: 비어 있음
+    async def fake_stderr():
+        if False:
+            yield b""
+        return
+
+    proc.stdout = fake_stdout()
+    proc.stderr = fake_stderr()
+
+    # stdin: write/drain/close 호출되면 returncode 세팅
+    stdin = MagicMock()
+    stdin.write = MagicMock()
+    stdin.drain = AsyncMock()
+
+    def _close():
+        proc.returncode = returncode_after_stdin
+    stdin.close = MagicMock(side_effect=_close)
+    proc.stdin = stdin
+
+    async def fake_wait():
+        # close가 호출된 뒤 returncode가 세팅되어 있어야 함
+        return proc.returncode if proc.returncode is not None else 0
+    proc.wait = fake_wait
+
+    def _kill():
+        proc.returncode = -9
+    proc.kill = MagicMock(side_effect=_kill)
+    return proc
+
+
+async def _inject_code(app, code: str, *, max_wait: float = 5.0) -> None:
+    """`_pending_auth_sessions`에 세션이 등록되면 code_future를 resolve."""
+    deadline = asyncio.get_running_loop().time() + max_wait
+    while asyncio.get_running_loop().time() < deadline:
+        sessions = getattr(app, "_pending_auth_sessions", {})
+        for session in list(sessions.values()):
+            if not session.code_future.done():
+                session.code_future.set_result(code)
+                return
+        await asyncio.sleep(0.01)
+    raise AssertionError("auth session never registered")
+
+
 class TestConfirmAuthLogin:
     """confirm_auth_login 액션 핸들러 테스트."""
 
     @pytest.mark.asyncio
     async def test_success_flow(self):
-        """인증 성공 시 완료 메시지가 전송되는지 확인."""
-        from slack_bot.handlers import register_handlers
-
-        app = MagicMock()
-        task_manager = MagicMock()
-        task_manager.get_running_tasks.return_value = []
-        task_manager.cleanup_old = MagicMock()
-
-        # register_handlers를 호출하여 핸들러를 등록
-        handlers = {}
-
-        def capture_action(action_id):
-            def decorator(func):
-                handlers[action_id] = func
-                return func
-            return decorator
-
-        app.action = capture_action
-        app.event = lambda event_type: lambda f: f
-
-        with patch("slack_bot.handlers.load_projects") as mock_load:
-            mock_config = MagicMock()
-            mock_config.projects = {}
-            mock_config.security.allowed_users = []
-            mock_load.return_value = mock_config
-            register_handlers(app, task_manager)
-
-        handler = handlers.get("confirm_auth_login")
-        assert handler is not None
+        """URL 출력 → 코드 입력 → 성공 메시지."""
+        app, handlers = _setup_handlers()
+        handler = handlers["confirm_auth_login"]
 
         ack = AsyncMock()
         client = MagicMock()
         client.chat_update = AsyncMock()
         client.chat_postMessage = AsyncMock()
 
-        # stdout에 URL을 출력하고 성공적으로 종료하는 프로세스 시뮬레이션
-        mock_proc = MagicMock()
-        mock_proc.returncode = 0
-
-        async def fake_stdout():
-            yield b"Open this URL: https://auth.example.com/login?code=abc\n"
-
-        async def fake_stderr():
-            return
-            yield  # make it an async generator
-
-        mock_proc.stdout = fake_stdout()
-        mock_proc.stderr = fake_stderr()
-
-        async def fake_wait():
-            return 0
-
-        mock_proc.wait = fake_wait
-
+        mock_proc = _make_mock_proc(
+            b"Open this URL: https://auth.example.com/login?code=abc\n",
+            returncode_after_stdin=0,
+        )
         body = _make_body()
 
-        with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock, return_value=mock_proc):
-            await handler(ack=ack, body=body, client=client)
+        with patch(
+            "asyncio.create_subprocess_exec",
+            new_callable=AsyncMock,
+            return_value=mock_proc,
+        ):
+            # 핸들러를 백그라운드로 실행하면서 별도 태스크에서 코드 주입
+            handler_task = asyncio.create_task(
+                handler(ack=ack, body=body, client=client)
+            )
+            await _inject_code(app, "test-auth-code-123")
+            await asyncio.wait_for(handler_task, timeout=5)
 
         ack.assert_awaited_once()
-        client.chat_update.assert_awaited_once()
-
-        # 성공 메시지 확인
+        # URL 안내 메시지가 게시됐는지
+        url_calls = [
+            c for c in client.chat_postMessage.call_args_list
+            if "브라우저에서" in str(c)
+        ]
+        assert len(url_calls) >= 1
+        # 코드가 stdin에 기록됐는지
+        mock_proc.stdin.write.assert_called_once_with(b"test-auth-code-123\n")
+        mock_proc.stdin.close.assert_called_once()
+        # 성공 메시지
         success_calls = [
             c for c in client.chat_postMessage.call_args_list
             if "인증이 완료되었습니다" in str(c)
@@ -198,30 +256,7 @@ class TestConfirmAuthLogin:
     @pytest.mark.asyncio
     async def test_file_not_found(self):
         """claude CLI가 없을 때 에러 메시지 전송 확인."""
-        from slack_bot.handlers import register_handlers
-
-        app = MagicMock()
-        task_manager = MagicMock()
-        task_manager.get_running_tasks.return_value = []
-
-        handlers = {}
-
-        def capture_action(action_id):
-            def decorator(func):
-                handlers[action_id] = func
-                return func
-            return decorator
-
-        app.action = capture_action
-        app.event = lambda event_type: lambda f: f
-
-        with patch("slack_bot.handlers.load_projects") as mock_load:
-            mock_config = MagicMock()
-            mock_config.projects = {}
-            mock_config.security.allowed_users = []
-            mock_load.return_value = mock_config
-            register_handlers(app, task_manager)
-
+        app, handlers = _setup_handlers()
         handler = handlers["confirm_auth_login"]
 
         ack = AsyncMock()
@@ -247,31 +282,8 @@ class TestConfirmAuthLogin:
 
     @pytest.mark.asyncio
     async def test_nonzero_exit(self):
-        """비정상 종료 시 에러 메시지 전송 확인."""
-        from slack_bot.handlers import register_handlers
-
-        app = MagicMock()
-        task_manager = MagicMock()
-        task_manager.get_running_tasks.return_value = []
-
-        handlers = {}
-
-        def capture_action(action_id):
-            def decorator(func):
-                handlers[action_id] = func
-                return func
-            return decorator
-
-        app.action = capture_action
-        app.event = lambda event_type: lambda f: f
-
-        with patch("slack_bot.handlers.load_projects") as mock_load:
-            mock_config = MagicMock()
-            mock_config.projects = {}
-            mock_config.security.allowed_users = []
-            mock_load.return_value = mock_config
-            register_handlers(app, task_manager)
-
+        """코드 입력 후 인증 실패 시 에러 메시지 전송 확인."""
+        app, handlers = _setup_handlers()
         handler = handlers["confirm_auth_login"]
 
         ack = AsyncMock()
@@ -279,34 +291,131 @@ class TestConfirmAuthLogin:
         client.chat_update = AsyncMock()
         client.chat_postMessage = AsyncMock()
 
-        mock_proc = MagicMock()
-        mock_proc.returncode = 1
-
-        async def fake_stdout():
-            yield b"Error: authentication failed\n"
-
-        async def fake_stderr():
-            return
-            yield
-
-        mock_proc.stdout = fake_stdout()
-        mock_proc.stderr = fake_stderr()
-
-        async def fake_wait():
-            return 1
-
-        mock_proc.wait = fake_wait
-
+        mock_proc = _make_mock_proc(
+            b"Open this URL: https://auth.example.com/login?code=abc\n",
+            returncode_after_stdin=1,
+        )
         body = _make_body()
 
-        with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock, return_value=mock_proc):
-            await handler(ack=ack, body=body, client=client)
+        with patch(
+            "asyncio.create_subprocess_exec",
+            new_callable=AsyncMock,
+            return_value=mock_proc,
+        ):
+            handler_task = asyncio.create_task(
+                handler(ack=ack, body=body, client=client)
+            )
+            await _inject_code(app, "wrong-code")
+            await asyncio.wait_for(handler_task, timeout=5)
 
         error_calls = [
             c for c in client.chat_postMessage.call_args_list
             if "인증 실패" in str(c)
         ]
         assert len(error_calls) == 1
+
+
+class TestAuthCodeRouting:
+    """진행 중 인증 세션이 후속 메시지를 코드 입력으로 가로채는지 확인."""
+
+    @pytest.mark.asyncio
+    async def test_full_flow_via_message_handler(self):
+        """confirm → URL → 사용자가 스레드에 코드 입력 → 인증 완료."""
+        from slack_bot.handlers import AuthSession
+
+        app, handlers = _setup_handlers()
+        confirm_handler = handlers["confirm_auth_login"]
+
+        ack = AsyncMock()
+        client = MagicMock()
+        client.chat_update = AsyncMock()
+        client.chat_postMessage = AsyncMock()
+
+        mock_proc = _make_mock_proc(
+            b"Visit: https://auth.example.com/x\n",
+            returncode_after_stdin=0,
+        )
+        body = _make_body(channel_id="C1", msg_ts="T1")
+
+        async def _drive_message():
+            """세션이 등록되면 _find/_resolve를 흉내내어 코드를 주입."""
+            deadline = asyncio.get_running_loop().time() + 5.0
+            while asyncio.get_running_loop().time() < deadline:
+                sessions = app._pending_auth_sessions
+                # 채널 C1, 스레드=T1 (URL 메시지가 게시된 스레드)
+                target: AuthSession | None = None
+                for s in sessions.values():
+                    if s.channel == "C1" and s.thread_ts == "T1" and not s.code_future.done():
+                        target = s
+                        break
+                if target:
+                    target.code_future.set_result("my-code")
+                    return
+                await asyncio.sleep(0.01)
+            raise AssertionError("session never appeared")
+
+        with patch(
+            "asyncio.create_subprocess_exec",
+            new_callable=AsyncMock,
+            return_value=mock_proc,
+        ):
+            await asyncio.gather(
+                confirm_handler(ack=ack, body=body, client=client),
+                _drive_message(),
+            )
+
+        mock_proc.stdin.write.assert_called_once_with(b"my-code\n")
+        assert any(
+            "인증이 완료되었습니다" in str(c)
+            for c in client.chat_postMessage.call_args_list
+        )
+
+    @pytest.mark.asyncio
+    async def test_cancel_keyword_kills_auth(self):
+        """사용자가 '취소'를 입력하면 future가 CancelledError로 닫히고 프로세스가 죽는다."""
+        from slack_bot.handlers import AuthSession
+
+        app, handlers = _setup_handlers()
+        confirm_handler = handlers["confirm_auth_login"]
+
+        ack = AsyncMock()
+        client = MagicMock()
+        client.chat_update = AsyncMock()
+        client.chat_postMessage = AsyncMock()
+
+        mock_proc = _make_mock_proc(
+            b"URL: https://auth.example.com/x\n",
+            returncode_after_stdin=0,
+        )
+        body = _make_body()
+
+        async def _cancel_session():
+            deadline = asyncio.get_running_loop().time() + 5.0
+            while asyncio.get_running_loop().time() < deadline:
+                for s in app._pending_auth_sessions.values():
+                    if not s.code_future.done():
+                        # 메시지 핸들러의 취소 경로와 동일하게 처리
+                        if s.proc.returncode is None:
+                            s.proc.kill()
+                        s.code_future.set_exception(asyncio.CancelledError("user cancelled"))
+                        return
+                await asyncio.sleep(0.01)
+            raise AssertionError("session never appeared")
+
+        with patch(
+            "asyncio.create_subprocess_exec",
+            new_callable=AsyncMock,
+            return_value=mock_proc,
+        ):
+            await asyncio.gather(
+                confirm_handler(ack=ack, body=body, client=client),
+                _cancel_session(),
+            )
+
+        # stdin이 사용되지 않았어야 함 (취소되었으므로)
+        mock_proc.stdin.write.assert_not_called()
+        # kill 호출
+        mock_proc.kill.assert_called()
 
 
 class TestCancelAuthLogin:

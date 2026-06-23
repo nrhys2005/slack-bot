@@ -61,11 +61,12 @@ ra-backend 상태 어때?
 
 ```
 /restart            # 봇 재시작 (자연어로는 트리거되지 않음 — 슬래시 전용)
-claude 로그인        # Claude CLI 인증
+claude 로그인        # Claude CLI 인증 (URL 전달 + 코드 입력까지 Slack에서 진행)
 claude 설치          # Claude CLI 설치
 ```
 
 - `/restart`는 "재시작"이라는 단어가 일상 대화에 자주 등장해 오매칭이 잦으므로 슬래시 명령으로만 동작
+- `claude 로그인` 흐름: 봇이 인증 URL을 스레드에 게시 → 사용자가 브라우저에서 인증 후 발급된 코드를 같은 스레드(또는 DM)에 그대로 붙여넣으면 봇이 `claude auth login`의 stdin으로 전달해 인증을 마무리한다. 입력 대기 중 `취소`/`cancel`을 보내면 인증을 중단한다 (기본 15분 대기).
 
 ## 설치
 
