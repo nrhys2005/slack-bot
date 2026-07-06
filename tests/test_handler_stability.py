@@ -133,6 +133,162 @@ class TestRunAndReportSemaphore:
         task_manager.complete_task.assert_called_once_with("001", True)
 
 
+class TestEyesReactionLifecycle:
+    """'읽는 중' :eyes: 리액션이 백그라운드 태스크 완료 시점에 제거되는지 확인.
+
+    회귀 방지: 예전에는 _handle_message의 finally에서 리액션을 즉시 제거해,
+    백그라운드로 위임되는 인텐트(command/shell/db/question)에서는 리액션이
+    붙자마자 사라져 사용자에게는 아예 안 붙은 것처럼 보였다.
+    """
+
+    @pytest.mark.asyncio
+    async def test_run_and_report_removes_eyes_when_event_ts_given(self):
+        from slack_bot.handlers import _run_and_report
+
+        sem = asyncio.Semaphore(1)
+        app = MagicMock()
+        app.client.chat_postMessage = AsyncMock()
+        app.client.reactions_remove = AsyncMock()
+
+        task_manager = MagicMock()
+        task = MagicMock()
+        task.task_id = "001"
+        task.project_name = "test"
+        task.channel = "C123"
+        task.thread_ts = None
+        task.elapsed_display = "1분"
+        task.user = "user1"
+
+        mock_result = MagicMock()
+        mock_result.success = True
+        mock_result.output = "done"
+
+        with patch(
+            "slack_bot.handlers.run_claude",
+            new_callable=AsyncMock,
+            return_value=mock_result,
+        ):
+            await _run_and_report(
+                app, task_manager, MagicMock(), task, "/harness TEST-1", sem,
+                event_ts="1000.0",
+            )
+
+        app.client.reactions_remove.assert_awaited_once_with(
+            channel="C123", timestamp="1000.0", name="eyes"
+        )
+
+    @pytest.mark.asyncio
+    async def test_run_and_report_no_reaction_call_without_event_ts(self):
+        """레거시 경로(확인 버튼)처럼 event_ts가 없으면 리액션 제거를 시도하지 않는다."""
+        from slack_bot.handlers import _run_and_report
+
+        sem = asyncio.Semaphore(1)
+        app = MagicMock()
+        app.client.chat_postMessage = AsyncMock()
+        app.client.reactions_remove = AsyncMock()
+
+        task_manager = MagicMock()
+        task = MagicMock()
+        task.task_id = "001"
+        task.project_name = "test"
+        task.channel = "C123"
+        task.thread_ts = None
+        task.elapsed_display = "1분"
+        task.user = "user1"
+
+        mock_result = MagicMock()
+        mock_result.success = True
+        mock_result.output = "done"
+
+        with patch(
+            "slack_bot.handlers.run_claude",
+            new_callable=AsyncMock,
+            return_value=mock_result,
+        ):
+            await _run_and_report(
+                app, task_manager, MagicMock(), task, "/harness TEST-1", sem,
+            )
+
+        app.client.reactions_remove.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_chat_report_removes_eyes_on_success(self):
+        from slack_bot.handlers import _run_chat_question_and_report
+
+        sem = asyncio.Semaphore(1)
+        app = MagicMock()
+        app.client.chat_postMessage = AsyncMock()
+        app.client.reactions_remove = AsyncMock()
+
+        task_manager = MagicMock()
+        task = MagicMock()
+        task.task_id = "042"
+        task.status = "running"
+
+        with patch(
+            "slack_bot.handlers.answer_question",
+            new_callable=AsyncMock,
+            return_value="답변",
+        ):
+            await _run_chat_question_and_report(
+                app,
+                task_manager=task_manager,
+                task=task,
+                question="질문",
+                tasks=[],
+                thread_history=[],
+                projects={},
+                target_project=None,
+                channel="C123",
+                thread_ts="1234.5678",
+                semaphore=sem,
+                event_ts="1000.0",
+            )
+
+        app.client.reactions_remove.assert_awaited_once_with(
+            channel="C123", timestamp="1000.0", name="eyes"
+        )
+
+    @pytest.mark.asyncio
+    async def test_chat_report_removes_eyes_even_on_error(self):
+        """답변 처리 중 예외가 나도 리액션은 반드시 제거된다 (finally)."""
+        from slack_bot.handlers import _run_chat_question_and_report
+
+        sem = asyncio.Semaphore(1)
+        app = MagicMock()
+        app.client.chat_postMessage = AsyncMock()
+        app.client.reactions_remove = AsyncMock()
+
+        task_manager = MagicMock()
+        task = MagicMock()
+        task.task_id = "042"
+        task.status = "running"
+
+        with patch(
+            "slack_bot.handlers.answer_question",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("boom"),
+        ):
+            await _run_chat_question_and_report(
+                app,
+                task_manager=task_manager,
+                task=task,
+                question="질문",
+                tasks=[],
+                thread_history=[],
+                projects={},
+                target_project=None,
+                channel="C123",
+                thread_ts="1234.5678",
+                semaphore=sem,
+                event_ts="1000.0",
+            )
+
+        app.client.reactions_remove.assert_awaited_once_with(
+            channel="C123", timestamp="1000.0", name="eyes"
+        )
+
+
 class TestRunDbQueryAndReportSemaphore:
     """_run_db_query_and_report가 semaphore를 사용하는지 확인."""
 

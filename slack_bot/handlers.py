@@ -138,35 +138,41 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
                 )
             return
 
-        # 즉시 리액션
+        # '읽는 중' :eyes: 리액션을 즉시 추가한다.
+        reaction_added = False
         try:
             await client.reactions_add(channel=channel, timestamp=event_ts, name="eyes")
+            reaction_added = True
         except Exception:
             logger.warning("리액션 추가 실패", exc_info=True)
 
         # 인텐트 파싱
         intent = parse_intent(question, projects)
 
+        # 백그라운드 태스크로 처리가 위임되면 True. 이 경우 리액션 제거를
+        # 백그라운드 태스크 완료 시점으로 넘기므로 여기서는 제거하지 않는다.
+        # (과거에는 finally에서 즉시 제거해 리액션이 붙자마자 사라졌다.)
+        delegated = False
         try:
             if intent.type == "admin":
                 await _handle_admin_intent(intent, user_id, channel, thread_ts, say)
                 return
             elif intent.type == "command":
-                await _handle_command_intent(
-                    intent, user_id, channel, thread_ts, say, client
+                delegated = await _handle_command_intent(
+                    intent, user_id, channel, thread_ts, event_ts, say, client
                 )
             elif intent.type == "shell_exec":
-                await _handle_shell_exec_intent(
-                    intent, user_id, channel, thread_ts, say, client
+                delegated = await _handle_shell_exec_intent(
+                    intent, user_id, channel, thread_ts, event_ts, say, client
                 )
             elif intent.type == "task_control":
                 await _handle_task_control(intent, user_id, channel, thread_ts, say)
             elif intent.type == "db_query":
-                await _handle_db_query_intent(
+                delegated = await _handle_db_query_intent(
                     intent, user_id, channel, thread_ts, event_ts, say, client
                 )
             elif intent.type in ("status", "question"):
-                await _handle_question_intent(
+                delegated = await _handle_question_intent(
                     intent,
                     question,
                     channel,
@@ -185,13 +191,10 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
                     thread_ts=thread_ts,
                 )
         finally:
-            # 리액션 제거
-            try:
-                await client.reactions_remove(
-                    channel=channel, timestamp=event_ts, name="eyes"
-                )
-            except Exception:
-                logger.warning("리액션 제거 실패", exc_info=True)
+            # 동기 처리로 끝났거나 백그라운드 위임에 실패(조기 반환)한 경우에만
+            # 여기서 리액션을 제거한다. 위임된 경우는 백그라운드 태스크가 제거한다.
+            if reaction_added and not delegated:
+                await _remove_eyes_reaction(app, channel, event_ts)
 
     # ----------------------------------------------------------------
     # 인텐트별 처리 함수
@@ -315,10 +318,15 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
         user_id: str,
         channel: str,
         thread_ts: str,
+        event_ts: str,
         say,
         client,
-    ) -> None:
-        """명령 실행 요청 → 즉시 백그라운드 실행 + 시작 알림."""
+    ) -> bool:
+        """명령 실행 요청 → 즉시 백그라운드 실행 + 시작 알림.
+
+        백그라운드 태스크를 띄웠으면 True를 반환한다. 이 경우 '읽는 중'
+        리액션 제거는 백그라운드 태스크 완료 시점으로 위임된다.
+        """
         project = projects.get(intent.project)
         if not project:
             project_list = ", ".join(f"`{n}`" for n in projects)
@@ -326,7 +334,7 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
                 f"프로젝트를 식별하지 못했습니다. 등록된 프로젝트: {project_list}",
                 thread_ts=thread_ts,
             )
-            return
+            return False
 
         prompt_display = f"/{intent.command} {intent.args}".strip()
 
@@ -349,6 +357,7 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
                 task,
                 prompt_display,
                 _task_semaphore,
+                event_ts=event_ts,
             )
         )
         _background_tasks.add(bg_task)
@@ -360,6 +369,7 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
             f"(태스크 ID: {task.task_id})",
             thread_ts=thread_ts,
         )
+        return True
 
     async def _handle_unknown_shell(
         intent: Intent,
@@ -391,10 +401,14 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
         user_id: str,
         channel: str,
         thread_ts: str,
+        event_ts: str,
         say,
         client,
-    ) -> None:
-        """셸 명령 직접 실행 → 즉시 응답 + 백그라운드 실행."""
+    ) -> bool:
+        """셸 명령 직접 실행 → 즉시 응답 + 백그라운드 실행.
+
+        백그라운드 태스크를 띄웠으면 True를 반환한다.
+        """
         project = projects.get(intent.project)
         if not project:
             project_list = ", ".join(f"`{n}`" for n in projects)
@@ -402,7 +416,7 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
                 f"프로젝트를 식별하지 못했습니다. 등록된 프로젝트: {project_list}",
                 thread_ts=thread_ts,
             )
-            return
+            return False
 
         log_path = f"/tmp/slackbot_shell_{int(time.time())}.log"
 
@@ -426,11 +440,13 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
         bg_task = asyncio.create_task(
             _run_shell_and_report(
                 app, task_manager, project, task, log_path, _task_semaphore,
+                event_ts=event_ts,
             )
         )
         _background_tasks.add(bg_task)
         bg_task.add_done_callback(_background_tasks.discard)
         bg_task.add_done_callback(_log_task_exception)
+        return True
 
     async def _handle_task_control(
         intent: Intent,
@@ -475,8 +491,11 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
         event_ts: str,
         say,
         client,
-    ) -> None:
-        """DB 조회 인텐트 처리."""
+    ) -> bool:
+        """DB 조회 인텐트 처리.
+
+        백그라운드 태스크를 띄웠으면 True를 반환한다.
+        """
         # DB 프로젝트 결정
         db_project = None
         if intent.project and intent.project in db_projects:
@@ -489,7 +508,7 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
                 "DB 조회가 가능한 프로젝트가 설정되어 있지 않습니다.",
                 thread_ts=thread_ts,
             )
-            return
+            return False
 
         wiki_path = wiki_projects[0].path if wiki_projects else None
 
@@ -521,6 +540,7 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
                     db_project=db_project,
                     wiki_path=wiki_path,
                     semaphore=_chat_semaphore,
+                    event_ts=event_ts,
                 )
             )
         else:
@@ -541,11 +561,13 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
                     db_project=db_project,
                     wiki_path=wiki_path,
                     semaphore=_chat_semaphore,
+                    event_ts=event_ts,
                 )
             )
         _background_tasks.add(bg_task)
         bg_task.add_done_callback(_background_tasks.discard)
         bg_task.add_done_callback(_log_task_exception)
+        return True
 
     async def _handle_question_intent(
         intent: Intent,
@@ -558,8 +580,12 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
         *,
         is_thread: bool = True,
         channel_type: str = "channel",
-    ) -> None:
-        """일반 질문 / 상태 조회 → 즉시 시작 알림 + 백그라운드 실행."""
+    ) -> bool:
+        """일반 질문 / 상태 조회 → 즉시 시작 알림 + 백그라운드 실행.
+
+        항상 백그라운드 태스크를 띄우므로 True를 반환한다. '읽는 중'
+        리액션 제거는 _run_chat_question_and_report 완료 시점으로 위임된다.
+        """
         tasks = task_manager.get_tasks_for_channel(channel)
 
         # 대화 이력 조회
@@ -625,11 +651,13 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
                 thread_ts=thread_ts,
                 semaphore=_chat_semaphore,
                 progress_ts=progress_ts,
+                event_ts=event_ts,
             )
         )
         _background_tasks.add(bg_task)
         bg_task.add_done_callback(_background_tasks.discard)
         bg_task.add_done_callback(_log_task_exception)
+        return True
 
     # ----------------------------------------------------------------
     # 이벤트 핸들러 등록
@@ -1188,6 +1216,26 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
 # ----------------------------------------------------------------
 
 
+async def _remove_eyes_reaction(
+    app: AsyncApp, channel: str | None, event_ts: str | None
+) -> None:
+    """'읽는 중' :eyes: 리액션을 제거한다 (best-effort).
+
+    백그라운드 태스크가 실제로 끝나는 시점(성공/취소/에러 무관)에 호출한다.
+    과거에는 _handle_message의 finally에서 리액션을 즉시 제거했으나, 인텐트
+    처리가 백그라운드로 넘어가면서 리액션이 붙자마자 떼여 사용자에게는
+    아예 안 붙은 것처럼 보였다.
+    """
+    if not channel or not event_ts:
+        return
+    try:
+        await app.client.reactions_remove(
+            channel=channel, timestamp=event_ts, name="eyes"
+        )
+    except Exception:
+        logger.warning("리액션 제거 실패", exc_info=True)
+
+
 async def _run_chat_question_and_report(
     app: AsyncApp,
     task_manager: TaskManager,
@@ -1201,6 +1249,7 @@ async def _run_chat_question_and_report(
     thread_ts: str,
     semaphore: asyncio.Semaphore,
     progress_ts: str | None = None,
+    event_ts: str | None = None,
 ) -> None:
     """answer_question을 백그라운드에서 실행하고 결과를 스레드에 보고한다.
 
@@ -1265,6 +1314,8 @@ async def _run_chat_question_and_report(
             text=":warning: 질문 처리 중 오류가 발생했습니다.",
         )
         await _delete_progress()
+    finally:
+        await _remove_eyes_reaction(app, channel, event_ts)
 
 
 async def _run_shell_and_report(
@@ -1274,6 +1325,7 @@ async def _run_shell_and_report(
     task,
     log_path: str,
     semaphore: asyncio.Semaphore,
+    event_ts: str | None = None,
 ) -> None:
     """셸 명령을 직접 실행하고 완료 시 결과를 보고한다."""
     try:
@@ -1343,6 +1395,8 @@ async def _run_shell_and_report(
         if task.thread_ts:
             err_kwargs["thread_ts"] = task.thread_ts
         await app.client.chat_postMessage(**err_kwargs)
+    finally:
+        await _remove_eyes_reaction(app, task.channel, event_ts)
 
 
 async def _run_and_report(
@@ -1352,6 +1406,7 @@ async def _run_and_report(
     task,
     prompt_display: str,
     semaphore: asyncio.Semaphore,
+    event_ts: str | None = None,
 ) -> None:
     try:
         async with semaphore:
@@ -1410,6 +1465,8 @@ async def _run_and_report(
         if task.thread_ts:
             err_kwargs["thread_ts"] = task.thread_ts
         await app.client.chat_postMessage(**err_kwargs)
+    finally:
+        await _remove_eyes_reaction(app, task.channel, event_ts)
 
 
 async def _run_db_query_export_and_report(
@@ -1423,6 +1480,7 @@ async def _run_db_query_export_and_report(
     db_project: ProjectConfig,
     wiki_path: str | None,
     semaphore: asyncio.Semaphore,
+    event_ts: str | None = None,
 ) -> None:
     """DB 조회 → CSV → Excel → Slack 파일 업로드."""
     try:
@@ -1481,6 +1539,8 @@ async def _run_db_query_export_and_report(
             thread_ts=thread_ts,
             text=":warning: DB 조회 결과 파일 생성 중 에러가 발생했습니다.",
         )
+    finally:
+        await _remove_eyes_reaction(app, channel, event_ts)
 
 
 async def _run_db_query_and_report(
@@ -1494,6 +1554,7 @@ async def _run_db_query_and_report(
     db_project: ProjectConfig,
     wiki_path: str | None,
     semaphore: asyncio.Semaphore,
+    event_ts: str | None = None,
 ) -> None:
     try:
         async with semaphore:
@@ -1528,3 +1589,5 @@ async def _run_db_query_and_report(
             thread_ts=thread_ts,
             text=":warning: DB 조회 중 에러가 발생했습니다. 로그를 확인해주세요.",
         )
+    finally:
+        await _remove_eyes_reaction(app, channel, event_ts)
