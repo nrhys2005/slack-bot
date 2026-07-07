@@ -381,7 +381,7 @@ _SHELL_FILLER_RE = re.compile(
 _TRAILING_COMMENT_RE = re.compile(r"[.。,，]+\s*결과는.*$")
 # 여는 코드펜스에 이어 "언어\n"이 올 때만 언어 식별자로 간주해 제거.
 # 개행이 없으면(```uv run ...) 첫 단어는 명령의 일부이므로 남긴다.
-_CODE_FENCE_LANG_RE = re.compile(r"```[ \t]*\w+[ \t]*\n")
+_CODE_FENCE_LANG_RE = re.compile(r"```[ \t]*\w+[ \t]*\r?\n")
 
 # 셸 명령 hint — 명령 추출과 unknown_shell 감지에서 공통으로 사용한다.
 # 슬래시 커맨드(`/stop` 등)와 충돌하지 않도록 `/`는 hint에 포함시키지 않는다.
@@ -446,6 +446,18 @@ def _extract_shell_command(
     # 개행 없이 명령이 바로 붙는 경우(```uv run ...)는 명령을 보존한다.
     remaining = _CODE_FENCE_LANG_RE.sub("", remaining)
     remaining = remaining.replace("```", "").replace("`", "")
+
+    # 셸 명령 판정을 방해하는 앞부분의 빈 줄이나 주석(#) 라인 제거.
+    # 코드블록 첫 줄이 주석/빈 줄이면 아래 hint 검사(startswith)를 통과하지
+    # 못해 question으로 오라우팅되어 1시간 안전 한계까지 헛도는 사고를 막는다.
+    lines = remaining.split("\n")
+    start_idx = len(lines)
+    for i, line in enumerate(lines):
+        stripped_line = line.strip()
+        if stripped_line and not stripped_line.startswith("#"):
+            start_idx = i
+            break
+    remaining = "\n".join(lines[start_idx:])
 
     remaining = remaining.strip().strip(",.!? ")
 
