@@ -101,6 +101,55 @@ class TestUnknownShellGuard:
         assert i.type == "question"
 
 
+class TestCodeFencedShellCommand:
+    """Slack 코드블록(``` ```)으로 감싼 셸 명령도 shell_exec로 라우팅돼야 한다."""
+
+    def test_triple_backtick_inline_routes_to_shell_exec(self):
+        """실제 사용자 케이스 재현 — 백틱 코드펜스가 question으로 새면 1시간 안전망 도달."""
+        text = (
+            "moment-some 에서\n"
+            "```uv run python -m scripts.run_4h_experiments```\n"
+            "실행해"
+        )
+        i = parse_intent(text, _projects())
+        assert i.type == "shell_exec"
+        assert i.command == "uv run python -m scripts.run_4h_experiments"
+
+    def test_triple_backtick_with_language_identifier(self):
+        """여는 펜스 뒤 언어 식별자(```bash\\n)는 제거하고 명령만 남긴다."""
+        text = "moment-some ```bash\nuv run python foo.py\n``` 실행해"
+        i = parse_intent(text, _projects())
+        assert i.type == "shell_exec"
+        assert i.command == "uv run python foo.py"
+
+    def test_fenced_command_unknown_project_routes_to_unknown_shell(self):
+        """프로젝트 미매칭 + 코드펜스 셸 명령은 unknown_shell로 차단돼야 한다."""
+        text = "trader 에서\n```uv run python -m scripts.run_4h_experiments```\n실행해"
+        i = parse_intent(text, _projects())
+        assert i.type == "unknown_shell"
+
+    def test_fenced_command_with_leading_comment_line(self):
+        """코드블록 첫 줄이 주석(#)이어도 명령 라인부터 추출해 shell_exec로 라우팅."""
+        text = "moment-some ```bash\n# 4h 실험 실행\nuv run python foo.py\n``` 실행해"
+        i = parse_intent(text, _projects())
+        assert i.type == "shell_exec"
+        assert i.command == "uv run python foo.py"
+
+    def test_fenced_command_with_blank_line_before_command(self):
+        """언어 식별자 없이 여는 펜스 뒤 빈 줄이 먼저 와도 명령을 정상 추출."""
+        text = "moment-some ```\n\nuv run python foo.py\n``` 실행해"
+        i = parse_intent(text, _projects())
+        assert i.type == "shell_exec"
+        assert i.command == "uv run python foo.py"
+
+    def test_fenced_command_with_crlf_language_identifier(self):
+        """Windows 개행(\\r\\n)이 섞인 언어 식별자도 제거하고 명령만 남긴다."""
+        text = "moment-some ```bash\r\nuv run python foo.py\r\n``` 실행해"
+        i = parse_intent(text, _projects())
+        assert i.type == "shell_exec"
+        assert i.command == "uv run python foo.py"
+
+
 class TestLooksLikeShellAttempt:
     """_looks_like_shell_attempt 헬퍼는 다중행에서도 동작해야 한다."""
 
