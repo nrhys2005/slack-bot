@@ -379,6 +379,9 @@ _SHELL_FILLER_RE = re.compile(
 )
 # "결과는 ..." 이후 문장 제거 (마침표, 쉼표, ..  등 구분자 포함)
 _TRAILING_COMMENT_RE = re.compile(r"[.。,，]+\s*결과는.*$")
+# 여는 코드펜스에 이어 "언어\n"이 올 때만 언어 식별자로 간주해 제거.
+# 개행이 없으면(```uv run ...) 첫 단어는 명령의 일부이므로 남긴다.
+_CODE_FENCE_LANG_RE = re.compile(r"```[ \t]*\w+[ \t]*\n")
 
 # 셸 명령 hint — 명령 추출과 unknown_shell 감지에서 공통으로 사용한다.
 # 슬래시 커맨드(`/stop` 등)와 충돌하지 않도록 `/`는 hint에 포함시키지 않는다.
@@ -402,7 +405,8 @@ def _looks_like_shell_attempt(text: str) -> bool:
     어미와 충돌하지 않는다.
     """
     for line in text.split("\n"):
-        stripped = line.strip().lower()
+        # 코드펜스/인라인 백틱은 hint 매칭을 방해하므로 제거 후 판정한다.
+        stripped = line.strip().strip("`").strip().lower()
         if any(stripped.startswith(hint) for hint in _SHELL_CMD_HINTS):
             return True
         if any(f" {hint}" in stripped for hint in _SHELL_CMD_HINTS):
@@ -436,6 +440,12 @@ def _extract_shell_command(
 
     # 필러 키워드 제거
     remaining = _SHELL_FILLER_RE.sub("", remaining)
+
+    # 코드블록/인라인 코드 펜스 제거.
+    # 여는 펜스 뒤 "언어\n"이 오면 언어 식별자로 보고 함께 제거하지만,
+    # 개행 없이 명령이 바로 붙는 경우(```uv run ...)는 명령을 보존한다.
+    remaining = _CODE_FENCE_LANG_RE.sub("", remaining)
+    remaining = remaining.replace("```", "").replace("`", "")
 
     remaining = remaining.strip().strip(",.!? ")
 
