@@ -38,7 +38,7 @@ slack_bot/
 ├── chat.py            # Claude CLI로 태스크 출력 분석, 프로젝트 상태 파악, 질문 답변
 ├── db_query.py        # DB 프로젝트 모델 기반 자연어→SQL→psql 실행
 ├── task_manager.py    # TaskInfo/TaskManager — 실행 중 태스크 추적, 출력 누적
-└── security.py        # 환경변수 화이트리스트, 출력 마스킹, 인증, rate limit, 감사 로깅
+└── security.py        # 서브프로세스 env 생성, 출력 마스킹, 인증, rate limit, 감사 로깅
 tests/                 # pytest 테스트 (인텐트 라우팅, 태스크 매니저, 핸들러/서브프로세스 안정성, 인증 로그인)
 .claude/               # 이 저장소 자체의 하네스 설정 (skills: harness/plan/develop/review, agents)
 projects.yaml          # 프로젝트 → 경로/명령어/capabilities 매핑 (gitignore — example 참고)
@@ -209,7 +209,7 @@ pyproject.toml         # 의존성 및 스크립트 정의
   5. stdout 256KB 상한 (OOM 방어)
 
 ### security.py
-- `make_safe_env(extra)` — 환경변수 화이트리스트(`_ENV_WHITELIST`) 기반 서브프로세스 env 생성: 시스템 필수(PATH, HOME 등), XDG/CLAUDE_CONFIG_DIR, NODE_PATH/SSL, Git/SSH, macOS 인코딩 변수만 통과
+- `make_safe_env(extra)` — `os.environ` 전체를 복사하고 `extra`를 병합해 서브프로세스 env 생성. `_ENV_WHITELIST`(PATH/HOME, XDG, Git/SSH 등) 상수는 정의만 되어 있고 현재 필터링에는 사용되지 않음
 - `redact_output(text) -> (masked, found)` — 출력 마스킹(`_REDACT_PATTERNS`): Slack 토큰(xox*-, xapp-), AWS Access Key, JWT, PostgreSQL 연결 문자열, URI 내 자격증명(`://user:pass@`), `password=`/`secret=`/`api_key=` 류 key=value 시크릿
 - `check_auth(user_id, role, allowed_users)` — role별 허용 유저 목록 검사 (`"*"`은 전체 허용), `RateLimiter(max_calls, window_seconds)` — 인메모리 per-user rate limit, `log_command()` — 감사 로깅
 
