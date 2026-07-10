@@ -150,6 +150,36 @@ class TestCodeFencedShellCommand:
         assert i.command == "uv run python foo.py"
 
 
+class TestSlackHtmlUnescape:
+    """Slack이 이스케이프한 &amp; &lt; &gt;를 원복해야 셸 명령이 정상 실행된다."""
+
+    def test_double_ampersand_unescaped_in_shell_command(self):
+        """실제 사용자 케이스 재현 — `&&`가 &amp;&amp;로 도착하면 sh가
+
+        `Syntax error: "&" unexpected`로 실패한다. &&로 원복돼야 한다.
+        """
+        text = "moment-some git pull origin main &amp;&amp; uv sync 실행해"
+        i = parse_intent(text, _projects())
+        assert i.type == "shell_exec"
+        assert i.command == "git pull origin main && uv sync"
+        assert "&amp;" not in i.command
+
+    def test_redirection_unescaped_in_shell_command(self):
+        """리다이렉션(&gt;, &lt;)도 원복돼야 셸에서 정상 동작한다."""
+        text = "moment-some uv run python foo.py &gt; out.log 실행해"
+        i = parse_intent(text, _projects())
+        assert i.type == "shell_exec"
+        assert i.command == "uv run python foo.py > out.log"
+        assert "&gt;" not in i.command
+
+    def test_plain_text_without_entities_is_unchanged(self):
+        """엔티티가 없는 일반 메시지는 원복이 no-op이어야 한다 (회귀 방지)."""
+        i = parse_intent("moment-some 하네스 MOM-43 돌려줘", _projects())
+        assert i.type == "command"
+        assert i.command == "harness"
+        assert i.args == "MOM-43"
+
+
 class TestLooksLikeShellAttempt:
     """_looks_like_shell_attempt 헬퍼는 다중행에서도 동작해야 한다."""
 
