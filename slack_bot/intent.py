@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import re
 from dataclasses import dataclass
 
@@ -113,7 +114,11 @@ def parse_intent(
     projects: dict[str, ProjectConfig],
 ) -> Intent:
     """사용자 메시지에서 의도를 규칙 기반으로 파싱한다."""
-    normalized = text.strip()
+    # Slack은 메시지의 &, <, >를 HTML 엔티티(&amp; &lt; &gt;)로 이스케이프해서
+    # 보낸다. 원복하지 않으면 `git pull ... && uv sync`가 셸에 `&amp;&amp;`로
+    # 전달돼 `/bin/sh: Syntax error: "&" unexpected`로 실패한다. 리다이렉션
+    # (>, <)이 든 셸 명령도 같은 이유로 깨진다. 파싱·실행 전에 먼저 원복한다.
+    normalized = html.unescape(text).strip()
     lower = normalized.lower()
 
     # 0. 관리 명령 감지 (재시작/업데이트)

@@ -137,6 +137,7 @@ pyproject.toml         # 의존성 및 스크립트 정의
 
 ### intent.py
 - `parse_intent(text, projects) -> Intent` — 규칙 기반 인텐트 파싱
+- 진입 즉시 `html.unescape()`로 정규화: Slack은 `&`, `<`, `>`를 HTML 엔티티(`&amp;` `&lt;` `&gt;`)로 이스케이프해서 보낸다. 원복하지 않으면 `git pull ... && uv sync`가 셸에 `&amp;&amp;`로 전달돼 `/bin/sh: Syntax error: "&" unexpected`로 실패하고, 리다이렉션(`>`,`<`)이 든 명령도 깨진다 (멘션 `<@U...>`는 리터럴 꺾쇠라 영향 없음)
 - Intent 타입: command, shell_exec, status, question, task_control, db_query (export 플래그 포함), admin, unknown_shell
 - `unknown_shell`: 트리거 동사 + 셸 hint는 있는데 프로젝트가 매칭 안 된 케이스. 곧바로 에러 응답으로 차단하지 않으면 question으로 흘러가 `claude -p`가 다중행 셸 명령을 "질문"으로 받아 1시간 안전 한계까지 헛돈다
   - 셸 hint 목록 `_SHELL_CMD_HINTS`: `uv `, `python `, `npm `, `git `, `docker `, `make `, `ls `, `./` 등 (전체는 intent.py 참조)
