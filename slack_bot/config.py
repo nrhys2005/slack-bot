@@ -28,7 +28,6 @@ class ProjectConfig:
     path: str
     commands: list[str] = field(default_factory=list)
     description: str = ""
-    wiki: bool = False
     db: DBConfig | None = None
     mcp_tools: list[str] = field(default_factory=list)
     status_paths: list[str] = field(default_factory=list)
@@ -93,7 +92,6 @@ def load_projects(config_path: str | None = None) -> AppConfig:
             path=cfg["path"],
             commands=cfg.get("commands", []),
             description=cfg.get("description", ""),
-            wiki=cfg.get("wiki", False),
             db=db_config,
             mcp_tools=mcp_tools,
             status_paths=cfg.get("status_paths", []),

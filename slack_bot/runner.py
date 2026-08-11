@@ -35,7 +35,25 @@ async def run_claude(
         args = "--auto"
 
     prompt = f"/{command} {args}"
+    return await _run_prompt(project, prompt, task)
 
+
+async def run_free_prompt(
+    project: ProjectConfig, prompt: str, task: TaskInfo
+) -> RunResult:
+    """프로젝트 디렉토리에서 자유 문장 프롬프트를 claude -p로 그대로 실행한다.
+
+    슬래시 명령(`/harness` 등)이 아닌 임의의 자연어 프롬프트를 풀 권한
+    (bypassPermissions)으로 실행하는 passthrough 경로. run_claude와 실행
+    로직은 공유하되, `/command --auto` 포매팅만 건너뛴다.
+    """
+    return await _run_prompt(project, prompt, task)
+
+
+async def _run_prompt(
+    project: ProjectConfig, prompt: str, task: TaskInfo
+) -> RunResult:
+    """claude -p <prompt> 를 프로젝트 디렉토리에서 실행하고 stdout을 누적한다."""
     env = make_safe_env()
     cmd = [
         "claude",

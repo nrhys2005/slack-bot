@@ -289,6 +289,89 @@ class TestEyesReactionLifecycle:
         )
 
 
+class TestRunPromptAndReport:
+    """_run_prompt_and_report(프로젝트 자유 문장 passthrough) 백그라운드 흐름."""
+
+    @pytest.mark.asyncio
+    async def test_posts_result_and_completes_task(self):
+        from slack_bot.handlers import _run_prompt_and_report
+
+        sem = asyncio.Semaphore(1)
+        app = MagicMock()
+        app.client.chat_postMessage = AsyncMock()
+        app.client.reactions_remove = AsyncMock()
+
+        project = MagicMock()
+        task_manager = MagicMock()
+        task = MagicMock()
+        task.task_id = "007"
+        task.status = "running"
+        task.args = "매수 로직 정리"
+        task.thread_ts = "1234.5678"
+        task.channel = "C123"
+
+        run_result = MagicMock()
+        run_result.success = True
+        run_result.output = "완료된 결과"
+
+        with patch(
+            "slack_bot.handlers.run_free_prompt",
+            new_callable=AsyncMock,
+            return_value=run_result,
+        ) as mock_run:
+            assert sem._value == 1
+            await _run_prompt_and_report(
+                app,
+                task_manager,
+                project,
+                task,
+                "매수 로직 정리",
+                sem,
+                event_ts="1000.0",
+            )
+            assert sem._value == 1
+
+        mock_run.assert_awaited_once_with(project, "매수 로직 정리", task)
+        app.client.chat_postMessage.assert_called_once()
+        task_manager.complete_task.assert_called_once_with("007", True)
+        app.client.reactions_remove.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_stopped_task_reports_cancel_and_skips_complete(self):
+        from slack_bot.handlers import _run_prompt_and_report
+
+        sem = asyncio.Semaphore(1)
+        app = MagicMock()
+        app.client.chat_postMessage = AsyncMock()
+        app.client.reactions_remove = AsyncMock()
+
+        project = MagicMock()
+        task_manager = MagicMock()
+        task = MagicMock()
+        task.task_id = "008"
+        task.status = "stopped"
+        task.args = "취소될 프롬프트"
+        task.thread_ts = "1234.5678"
+        task.channel = "C123"
+
+        run_result = MagicMock()
+        run_result.success = False
+        run_result.output = ""
+
+        with patch(
+            "slack_bot.handlers.run_free_prompt",
+            new_callable=AsyncMock,
+            return_value=run_result,
+        ):
+            await _run_prompt_and_report(
+                app, task_manager, project, task, "취소될 프롬프트", sem
+            )
+
+        # 취소 안내만 전송하고 complete_task는 호출하지 않는다.
+        app.client.chat_postMessage.assert_called_once()
+        task_manager.complete_task.assert_not_called()
+
+
 class TestRunDbQueryAndReportSemaphore:
     """_run_db_query_and_report가 semaphore를 사용하는지 확인."""
 
@@ -321,7 +404,6 @@ class TestRunDbQueryAndReportSemaphore:
                 thread_ts="1234.5678",
                 user_id="U123",
                 db_project=db_project,
-                wiki_path=None,
                 semaphore=sem,
             )
             assert sem._value == 1

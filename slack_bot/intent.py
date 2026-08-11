@@ -13,7 +13,7 @@ class Intent:
 
     type: (
         # "command" | "shell_exec" | "status" | "question" | "task_control"
-        # | "db_query" | "admin" | "unknown_shell"
+        # | "db_query" | "admin" | "unknown_shell" | "project_prompt"
         str
     )
     project: str = ""  # 식별된 프로젝트명
@@ -210,10 +210,22 @@ def parse_intent(
             raw_text=normalized,
         )
 
-    # 8. 기본: 일반 질문
+    # 8. 프로젝트가 매칭됐으면 자유 문장 프롬프트를 해당 프로젝트에서 claude -p로
+    #    그대로 실행한다(project_prompt). 알려진 명령어/셸 hint/상태·DB 키워드에
+    #    걸리지 않은 자유 문장은 위키식 읽기전용 Q&A로 빠지지 않고 풀 권한
+    #    passthrough로 처리된다.
+    if matched_project:
+        return Intent(
+            type="project_prompt",
+            project=matched_project,
+            args=normalized,
+            raw_text=normalized,
+        )
+
+    # 9. 프로젝트 미매칭: 일반 질문(읽기전용 Q&A)
     return Intent(
         type="question",
-        project=matched_project or "",
+        project="",
         raw_text=normalized,
     )
 
