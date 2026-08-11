@@ -168,7 +168,6 @@ def build_db_instructions(
 
 def _build_sqlite_system_prompt(
     project: ProjectConfig,
-    wiki_path: str | None = None,
 ) -> str:
     """SQLite 프로젝트용 시스템 프롬프트."""
     db_path = str(Path(project.path) / project.db.db_path)
@@ -181,18 +180,11 @@ def _build_sqlite_system_prompt(
             f"- {paths} 의 모델을 Read/Grep해 테이블·컬럼 확인\n"
         )
 
-    wiki_line = (
-        f"- 도메인 용어가 모호하면 위키 디렉토리({wiki_path})에서 Glob/Grep/Read로 찾아본다.\n"
-        if wiki_path
-        else ""
-    )
-
     return f"""너는 Slack DB 봇이다. 자연어 질문을 받아 SQL로 변환하고 sqlite3로 실행해 결과를 돌려준다.
 
 ## DB 정보
 - SQLite DB 경로: `{db_path}`
 {model_section}
-{wiki_line}
 ## sqlite3 호출 예시
 ```bash
    sqlite3 "file:{db_path}?mode=ro" "SELECT ... LIMIT 100"
@@ -231,7 +223,6 @@ def build_sqlite_db_instructions(project: ProjectConfig) -> str:
 def _build_system_prompt(
     db_envs: dict[str, dict[str, str]],
     model_paths: list[str] | None = None,
-    wiki_path: str | None = None,
 ) -> str:
     # DB별 접속정보 섹션
     db_sections: list[str] = []
@@ -259,18 +250,11 @@ def _build_system_prompt(
             f"- 질문 주제에 따라 적절한 DB 선택\n"
         )
 
-    wiki_line = (
-        f"- 도메인 용어가 모호하면 위키 디렉토리({wiki_path})에서 Glob/Grep/Read로 찾아본다.\n"
-        if wiki_path
-        else ""
-    )
-
     return f"""너는 Slack DB 봇이다. 자연어 질문을 받아 SQL로 변환하고 psql로 실행해 결과를 돌려준다.
 
 ## DB 접속 정보
 {chr(10).join(db_sections)}
 {model_section}
-{wiki_line}
 ## psql 호출 예시
 ```bash
 {chr(10).join(psql_examples)}
@@ -290,12 +274,11 @@ def _build_system_prompt(
 async def run_db_query(
     question: str,
     project: ProjectConfig,
-    wiki_path: str | None = None,
     task: TaskInfo | None = None,
 ) -> str:
     """자연어 질문을 받아 Claude CLI로 SQL 생성·실행 후 결과 문자열 반환."""
     if project.db and project.db.db_type == "sqlite":
-        system_prompt = _build_sqlite_system_prompt(project, wiki_path)
+        system_prompt = _build_sqlite_system_prompt(project)
         prompt = f"{system_prompt}\n\n## 질문\n{question}"
         env = make_safe_env()
     else:
@@ -306,7 +289,7 @@ async def run_db_query(
             return f":warning: DB 자격증명 로드 실패: {exc}"
 
         model_paths = project.db.model_paths if project.db else None
-        system_prompt = _build_system_prompt(db_envs, model_paths, wiki_path)
+        system_prompt = _build_system_prompt(db_envs, model_paths)
         prompt = f"{system_prompt}\n\n## 질문\n{question}"
 
         extra_env: dict[str, str] = {}
@@ -439,7 +422,6 @@ def _build_export_prompt_pg(
     db_envs: dict[str, dict[str, str]],
     model_paths: list[str] | None,
     csv_path: Path,
-    wiki_path: str | None = None,
 ) -> str:
     """PostgreSQL 내보내기용 시스템 프롬프트."""
     db_sections: list[str] = []
@@ -466,18 +448,11 @@ def _build_export_prompt_pg(
             f"- {paths} 의 SQLAlchemy 모델을 Read/Grep해 테이블·컬럼 확인\n"
         )
 
-    wiki_line = (
-        f"- 도메인 용어가 모호하면 위키 디렉토리({wiki_path})에서 Glob/Grep/Read로 찾아본다.\n"
-        if wiki_path
-        else ""
-    )
-
     return f"""너는 Slack DB 봇이다. 자연어 질문을 받아 SQL로 변환하고, 결과를 CSV 파일로 저장한다.
 
 ## DB 접속 정보
 {chr(10).join(db_sections)}
 {model_section}
-{wiki_line}
 
 ## CSV 저장 규칙 (필수)
 - 결과를 반드시 `{csv_path}` 에 CSV 파일로 저장해야 한다.
@@ -499,7 +474,6 @@ def _build_export_prompt_pg(
 def _build_export_prompt_sqlite(
     project: ProjectConfig,
     csv_path: Path,
-    wiki_path: str | None = None,
 ) -> str:
     """SQLite 내보내기용 시스템 프롬프트."""
     db_path = str(Path(project.path) / project.db.db_path)
@@ -513,18 +487,11 @@ def _build_export_prompt_sqlite(
             f"- 또는 sqlite3로 `.schema` 명령 실행\n"
         )
 
-    wiki_line = (
-        f"- 도메인 용어가 모호하면 위키 디렉토리({wiki_path})에서 Glob/Grep/Read로 찾아본다.\n"
-        if wiki_path
-        else ""
-    )
-
     return f"""너는 Slack DB 봇이다. 자연어 질문을 받아 SQL로 변환하고, 결과를 CSV 파일로 저장한다.
 
 ## DB 정보
 - SQLite DB 경로: `{db_path}`
 {model_section}
-{wiki_line}
 
 ## CSV 저장 규칙 (필수)
 - 결과를 반드시 `{csv_path}` 에 CSV 파일로 저장해야 한다.
@@ -546,7 +513,6 @@ def _build_export_prompt_sqlite(
 async def run_db_query_export(
     question: str,
     project: ProjectConfig,
-    wiki_path: str | None = None,
     task: TaskInfo | None = None,
 ) -> ExportResult:
     """자연어 질문 → Claude CLI → CSV → Excel 변환. ExportResult 반환."""
@@ -556,7 +522,7 @@ async def run_db_query_export(
 
     try:
         if project.db and project.db.db_type == "sqlite":
-            system_prompt = _build_export_prompt_sqlite(project, csv_path, wiki_path)
+            system_prompt = _build_export_prompt_sqlite(project, csv_path)
             env = make_safe_env()
         else:
             try:
@@ -569,7 +535,7 @@ async def run_db_query_export(
 
             model_paths = project.db.model_paths if project.db else None
             system_prompt = _build_export_prompt_pg(
-                db_envs, model_paths, csv_path, wiki_path
+                db_envs, model_paths, csv_path
             )
             extra_env: dict[str, str] = {}
             for name, creds in db_envs.items():

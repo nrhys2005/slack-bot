@@ -12,7 +12,6 @@ def _projects() -> dict[str, ProjectConfig]:
         "wiki": ProjectConfig(
             name="wiki",
             path="/tmp/wiki",
-            wiki=True,
             description="RA 위키 (Notion 미러)",
         ),
         "moment-some": ProjectConfig(
@@ -178,6 +177,58 @@ class TestSlackHtmlUnescape:
         assert i.type == "command"
         assert i.command == "harness"
         assert i.args == "MOM-43"
+
+
+class TestProjectPromptPassthrough:
+    """프로젝트 매칭 + 자유 문장 → project_prompt(풀 권한 passthrough) 라우팅."""
+
+    def _projects(self) -> dict[str, ProjectConfig]:
+        return {
+            "trader": ProjectConfig(
+                name="trader", path="/tmp/trader", description="트레이더"
+            ),
+            "moment-some": ProjectConfig(
+                name="moment-some",
+                path="/tmp/moment-some",
+                commands=["harness", "review"],
+            ),
+            "ra-backend": ProjectConfig(
+                name="ra-backend",
+                path="/tmp/ra-backend",
+                db=DBConfig(env_file=".env", env_prefix={"main": "DB"}),
+            ),
+        }
+
+    def test_matched_project_free_text_routes_to_project_prompt(self):
+        """프로젝트가 매칭되고 알려진 명령/셸/상태/DB에 안 걸리는 자유 문장."""
+        i = parse_intent("trader 매수 로직 개선 방향 정리해줘", self._projects())
+        assert i.type == "project_prompt"
+        assert i.project == "trader"
+        # 프롬프트 원문이 args로 실려야 한다.
+        assert "매수 로직" in i.args
+
+    def test_no_project_free_text_stays_question(self):
+        """프로젝트 미매칭 자유 문장은 기존대로 읽기전용 question 유지."""
+        i = parse_intent("오늘 뭐 하지?", self._projects())
+        assert i.type == "question"
+        assert i.project == ""
+
+    def test_status_keyword_still_read_only_status(self):
+        """상태 키워드는 passthrough가 아닌 status(읽기전용)로 유지돼야 한다."""
+        i = parse_intent("trader 상태 어때?", self._projects())
+        assert i.type == "status"
+        assert i.project == "trader"
+
+    def test_known_command_takes_priority_over_prompt(self):
+        """알려진 명령은 passthrough에 가로채이면 안 된다."""
+        i = parse_intent("moment-some 하네스 돌려줘", self._projects())
+        assert i.type == "command"
+        assert i.command == "harness"
+
+    def test_db_keyword_still_routes_to_db_query(self):
+        """DB 키워드는 passthrough가 아닌 db_query로 유지돼야 한다."""
+        i = parse_intent("ra-backend 유저 수 조회해줘", self._projects())
+        assert i.type == "db_query"
 
 
 class TestLooksLikeShellAttempt:
