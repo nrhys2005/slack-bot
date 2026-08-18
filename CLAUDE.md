@@ -82,13 +82,12 @@ pyproject.toml         # 의존성 및 스크립트 정의
 ### 태스크 제어
 
 ```
-"실행중인 태스크 보여줘" → task_control/list (자연어 허용)
 "/stop"                  → task_control/list
 "/stop 003"              → task_control/stop, args="003"
 ```
 
-- 중단은 자연어("중단", "멈춰", "stop") 오매칭이 잦아 슬래시 `/stop <ID>` 전용
-- 목록 조회는 자연어("태스크"/"task")로도 가능
+- 중단·목록 모두 자연어 오매칭이 잦아 슬래시 `/stop [<ID>]` 전용
+- 자연어 목록 조회("태스크"/"task")는 제거됨 — "태스크"라는 단어가 든 일반 질문까지 목록 조회로 오매칭돼 항상 "실행 중인 태스크가 없습니다."로 응답하던 문제 방지
 
 - 명령 실행(`command`/`shell_exec`)뿐 아니라 질문 답변(`question`/`status`)과 DB 조회/추출(`db_query`)도 TaskManager에 등록되어 자연어로 중단 가능
 - `TaskManager.stop_task()` → 백그라운드 `claude -p` 프로세스에 `terminate()` + `task.status="stopped"`
@@ -151,7 +150,7 @@ pyproject.toml         # 의존성 및 스크립트 정의
   - `_SLASH_ADMIN_COMMANDS` — 슬래시 전용 매칭 (`/restart`). "재시작"은 일상 대화 오매칭이 잦아 슬래시로만 트리거
 - task_control:
   - `/stop [task_id]` — 슬래시 전용 중단/목록 (자연어 "중단/멈춰/stop" 매칭 제거)
-  - `_TASK_LIST_KEYWORDS` (`태스크`, `task`) — 자연어 목록 조회만 허용
+  - 자연어 목록 조회(`태스크`/`task` 키워드 매칭)는 제거됨 — 해당 단어가 든 일반 질문까지 목록 조회로 오매칭돼 항상 "실행 중인 태스크가 없습니다."로 응답하던 문제 방지. 목록은 인자 없는 `/stop`으로만 조회
 
 ### runner.py
 - `_build_allowed_tools(project)` — 프로젝트 mcp_tools 기반 동적 도구 목록 생성
