@@ -57,7 +57,7 @@ pyproject.toml         # 의존성 및 스크립트 정의
   → 즉시 시작 알림: ":rocket: moment-some /harness MOM-43 실행을 시작합니다. (태스크 ID: 001)"
   → TaskManager.create_task() — 태스크 ID 부여, 추적 시작
   → asyncio.create_task()로 백그라운드 실행
-    → runner.py: claude -p "/harness MOM-43" (프로젝트별 MCP 도구 동적 구성)
+    → runner.py: claude -p "/harness MOM-43" (MCP 도구는 claude CLI가 ~/.claude.json에서 해석)
     → stdout 라인별 스트리밍 → TaskInfo.output_lines에 누적
     → 완료 시 결과를 같은 스레드에 Block Kit 메시지로 전송
 ```
@@ -129,7 +129,7 @@ pyproject.toml         # 의존성 및 스크립트 정의
 - 하위호환: `db_backend: true` → `DBConfig` 자동 변환, `mcp_tools` 미설정 시 기본 MCP 제공
 - 프로젝트별 capabilities:
   - `db: {...}` — DB 조회 설정 (db_type, env_file, env_prefix, model_paths, db_path)
-  - `mcp_tools: [jira_*, ...]` — Claude CLI에 전달할 MCP 도구 패턴
+  - `mcp_tools: [jira_*, ...]` — 프로젝트가 쓸 MCP 도구 패턴(문서·향후용 메타데이터). ⚠️ 현재 실행 코드(`runner.py`/`chat.py`)는 이 값을 `claude` 명령에 전달하지 않는다 — 아래 "MCP 도구 해석" 참고
   - `status_paths: [logs/, ...]` — 상태 파악 시 읽을 경로
   - `description` — 채팅에서 프로젝트 식별용 키워드
 
@@ -153,7 +153,7 @@ pyproject.toml         # 의존성 및 스크립트 정의
   - 자연어 목록 조회(`태스크`/`task` 키워드 매칭)는 제거됨 — 해당 단어가 든 일반 질문까지 목록 조회로 오매칭돼 항상 "실행 중인 태스크가 없습니다."로 응답하던 문제 방지. 목록은 인자 없는 `/stop`으로만 조회
 
 ### runner.py
-- `_build_allowed_tools(project)` — 프로젝트 mcp_tools 기반 동적 도구 목록 생성
+- MCP 도구 해석: `_run_prompt`는 `--mcp-config`/`--allowedTools`를 넘기지 않는다. `--permission-mode bypassPermissions`로 실행하므로 claude CLI가 **user 스코프 `~/.claude.json`(전역 `mcpServers`)와 프로젝트 `.mcp.json`에서 MCP 서버를 스스로 해석**하고 모든 도구가 허용된다. 따라서 MCP 서버는 `claude mcp add -s user ...`로 한 번 등록하면 전 프로젝트 cwd에서 쓰이고, 봇은 요청마다 새 서브프로세스를 띄우므로 재시작 없이 반영된다. (`config.py`의 `mcp_tools`는 아직 이 경로에 배선되어 있지 않은 메타데이터)
 - `run_claude(project, command, args, task) -> RunResult` — `/<command> <args>` 슬래시 명령 실행 (`--auto` 자동 부착)
 - `run_free_prompt(project, prompt, task) -> RunResult` — 슬래시가 아닌 자유 문장 프롬프트를 그대로 실행 (project_prompt passthrough용). `run_claude`와 실행 로직은 내부 `_run_prompt()`로 공유
 - 실행: `claude -p "<prompt>" --output-format text --permission-mode bypassPermissions`
