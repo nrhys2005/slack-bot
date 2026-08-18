@@ -13,7 +13,7 @@ class Intent:
 
     type: (
         # "command" | "shell_exec" | "status" | "question" | "task_control"
-        # | "db_query" | "admin" | "unknown_shell"
+        # | "db_query" | "admin" | "unknown_shell" | "project_prompt"
         str
     )
     project: str = ""  # 식별된 프로젝트명
@@ -38,9 +38,6 @@ _COMMAND_ALIASES: dict[str, str] = {
     "review": "review",
     "검토": "review",
 }
-
-# 자연어 목록 조회 — 오매칭 우려가 적어 그대로 둠
-_TASK_LIST_KEYWORDS: frozenset[str] = frozenset({"태스크", "task"})
 
 _ADMIN_KEYWORDS: dict[str, str] = {
     "claude 로그인": "auth_login",
@@ -210,10 +207,22 @@ def parse_intent(
             raw_text=normalized,
         )
 
-    # 8. 기본: 일반 질문
+    # 8. 프로젝트가 매칭됐으면 자유 문장 프롬프트를 해당 프로젝트에서 claude -p로
+    #    그대로 실행한다(project_prompt). 알려진 명령어/셸 hint/상태·DB 키워드에
+    #    걸리지 않은 자유 문장은 위키식 읽기전용 Q&A로 빠지지 않고 풀 권한
+    #    passthrough로 처리된다.
+    if matched_project:
+        return Intent(
+            type="project_prompt",
+            project=matched_project,
+            args=normalized,
+            raw_text=normalized,
+        )
+
+    # 9. 프로젝트 미매칭: 일반 질문(읽기전용 Q&A)
     return Intent(
         type="question",
-        project=matched_project or "",
+        project="",
         raw_text=normalized,
     )
 
@@ -239,10 +248,12 @@ def _detect_admin(text: str, lower: str) -> Intent | None:
 def _detect_task_control(text: str, lower: str) -> Intent | None:
     """태스크 제어(중단/목록) 인텐트 감지.
 
-    중단은 자연어("중단", "멈춰") 오매칭이 잦아 슬래시 명령으로만 트리거된다.
+    중단·목록 모두 자연어 오매칭이 잦아 슬래시 명령으로만 트리거된다.
     - `/stop 003` → 003번 태스크 중단
     - `/stop` → 실행 중인 태스크 목록
-    - "태스크 보여줘" 같은 자연어 목록 조회는 유지
+    - 자연어 목록 조회("태스크"/"task" 포함)는 제거됨. "태스크"라는 단어가
+      들어간 일반 질문("...태스크가 없습니다 조건 확인해줘")까지 목록 조회로
+      오매칭돼 항상 "실행 중인 태스크가 없습니다."로 응답하던 문제를 없앤다.
     """
     # 슬래시 /stop — 인자 있으면 중단, 없으면 목록
     slash_match = _SLASH_COMMAND_RE.match(text.strip())
@@ -256,10 +267,6 @@ def _detect_task_control(text: str, lower: str) -> Intent | None:
                 args=task_id_match.group(1),
                 raw_text=text,
             )
-        return Intent(type="task_control", command="list", raw_text=text)
-
-    # 자연어 목록 조회 — "태스크 보여줘"
-    if any(kw in lower for kw in _TASK_LIST_KEYWORDS):
         return Intent(type="task_control", command="list", raw_text=text)
 
     return None

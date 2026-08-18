@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-자연어 채팅으로 프로젝트별 Claude Code 명령어를 실행하고, @멘션/DM으로 상태 파악·위키 검색·DB 조회까지 할 수 있는 프로젝트 관리 Slack 봇.
+자연어 채팅으로 프로젝트별 Claude Code 명령어를 실행하고, @멘션/DM으로 상태 파악·DB 조회·자유 문장 프롬프트 실행까지 할 수 있는 프로젝트 관리 Slack 봇.
 
 ## 기술 스택
 
@@ -32,7 +32,7 @@ uv run pytest tests/test_task_manager.py -k stop # 단일 테스트 (-k 패턴)
 slack_bot/
 ├── main.py            # 엔트리포인트. AsyncApp, TaskManager 생성, Socket Mode 시작
 ├── config.py          # ProjectConfig/DBConfig 데이터클래스, projects.yaml 로드
-├── intent.py          # 자연어 인텐트 파싱 (command, status, question, task_control, db_query)
+├── intent.py          # 자연어 인텐트 파싱 (command, status, question, task_control, db_query, project_prompt)
 ├── runner.py          # run_claude() — claude -p 비동기 서브프로세스 실행 (스트리밍)
 ├── handlers.py        # @멘션, DM 통합 메시지 핸들러 (즉시 실행 + 백그라운드)
 ├── chat.py            # Claude CLI로 태스크 출력 분석, 프로젝트 상태 파악, 질문 답변
@@ -75,26 +75,25 @@ pyproject.toml         # 의존성 및 스크립트 정의
       — 알림 메시지의 ts를 보관해두고, 답변/취소/에러 메시지를 보낸 직후
         `chat.chat_delete`로 삭제해 채널에 흔적을 남기지 않는다 (best-effort).
     → asyncio.create_task()로 _run_chat_question_and_report 백그라운드 실행
-      → chat.answer_question() — target_project 코드/로그/위키/DB를 읽어 답변 생성
+      → chat.answer_question() — target_project 코드/로그/DB를 읽어 답변 생성
       → 완료 시 같은 스레드에 결과 메시지 전송 후 시작 알림 삭제
 ```
 
 ### 태스크 제어
 
 ```
-"실행중인 태스크 보여줘" → task_control/list (자연어 허용)
 "/stop"                  → task_control/list
 "/stop 003"              → task_control/stop, args="003"
 ```
 
-- 중단은 자연어("중단", "멈춰", "stop") 오매칭이 잦아 슬래시 `/stop <ID>` 전용
-- 목록 조회는 자연어("태스크"/"task")로도 가능
+- 중단·목록 모두 자연어 오매칭이 잦아 슬래시 `/stop [<ID>]` 전용
+- 자연어 목록 조회("태스크"/"task")는 제거됨 — "태스크"라는 단어가 든 일반 질문까지 목록 조회로 오매칭돼 항상 "실행 중인 태스크가 없습니다."로 응답하던 문제 방지
 
 - 명령 실행(`command`/`shell_exec`)뿐 아니라 질문 답변(`question`/`status`)과 DB 조회/추출(`db_query`)도 TaskManager에 등록되어 자연어로 중단 가능
 - `TaskManager.stop_task()` → 백그라운드 `claude -p` 프로세스에 `terminate()` + `task.status="stopped"`
 - 완료 후 `task.status == "stopped"`이면 결과 대신 ":octagonal_sign: 취소되었습니다." 응답
 - `complete_task()`는 `stopped` 상태를 덮어쓰지 않음 (terminate→subprocess 자연 종료의 늦은 도착 보호)
-- 태스크 타입(`create_task` 2번째 인자): 명령 실행은 커맨드명(`harness` 등), 그 외 `"shell"`, `"chat"`, `"db"`, `"db_export"`
+- 태스크 타입(`create_task` 2번째 인자): 명령 실행은 커맨드명(`harness` 등), 그 외 `"shell"`, `"prompt"`(project_prompt), `"chat"`, `"db"`, `"db_export"`
 - `cleanup_old(max_age=1800)` — 완료 후 30분 지난 태스크는 목록에서 제거
 
 ### 자연어 DB 조회
@@ -125,11 +124,10 @@ pyproject.toml         # 의존성 및 스크립트 정의
 - `DBConfig(db_type, env_file, env_prefix, model_paths, db_path)` — 프로젝트별 DB 접속 설정
   - `db_type`: "postgresql" (기본) 또는 "sqlite"
   - `db_path`: SQLite DB 파일 경로 (프로젝트 루트 기준 상대경로)
-- `ProjectConfig(name, path, commands, description, wiki, db, mcp_tools, status_paths)` — 프로젝트 설정
+- `ProjectConfig(name, path, commands, description, db, mcp_tools, status_paths)` — 프로젝트 설정
 - `load_projects()`: `projects.yaml` 읽어서 `AppConfig(projects, security)` 반환
 - 하위호환: `db_backend: true` → `DBConfig` 자동 변환, `mcp_tools` 미설정 시 기본 MCP 제공
 - 프로젝트별 capabilities:
-  - `wiki: true` — 위키 검색 소스 (복수 가능)
   - `db: {...}` — DB 조회 설정 (db_type, env_file, env_prefix, model_paths, db_path)
   - `mcp_tools: [jira_*, ...]` — Claude CLI에 전달할 MCP 도구 패턴
   - `status_paths: [logs/, ...]` — 상태 파악 시 읽을 경로
@@ -138,7 +136,8 @@ pyproject.toml         # 의존성 및 스크립트 정의
 ### intent.py
 - `parse_intent(text, projects) -> Intent` — 규칙 기반 인텐트 파싱
 - 진입 즉시 `html.unescape()`로 정규화: Slack은 `&`, `<`, `>`를 HTML 엔티티(`&amp;` `&lt;` `&gt;`)로 이스케이프해서 보낸다. 원복하지 않으면 `git pull ... && uv sync`가 셸에 `&amp;&amp;`로 전달돼 `/bin/sh: Syntax error: "&" unexpected`로 실패하고, 리다이렉션(`>`,`<`)이 든 명령도 깨진다 (멘션 `<@U...>`는 리터럴 꺾쇠라 영향 없음)
-- Intent 타입: command, shell_exec, status, question, task_control, db_query (export 플래그 포함), admin, unknown_shell
+- Intent 타입: command, shell_exec, status, question, task_control, db_query (export 플래그 포함), admin, unknown_shell, project_prompt
+- `project_prompt`: 프로젝트가 매칭됐지만 알려진 명령어/셸 hint/상태·DB 키워드에 걸리지 않은 자유 문장. 위키식 읽기전용 Q&A(`question`)로 흘리지 않고 해당 프로젝트 디렉토리에서 `claude -p "<원문>"`을 **풀 권한(bypassPermissions)**으로 실행하는 passthrough 경로. 프로젝트 미매칭 자유 문장만 `question`으로 폴백된다 (`parse_intent` 8·9단계). ⚠️ 자유 문장 하나로 해당 프로젝트에 쓰기/편집·PR이 나갈 수 있으므로, 실거래 저장소 등에서는 이 동작을 인지하고 써야 한다
 - `unknown_shell`: 트리거 동사 + 셸 hint는 있는데 프로젝트가 매칭 안 된 케이스. 곧바로 에러 응답으로 차단하지 않으면 question으로 흘러가 `claude -p`가 다중행 셸 명령을 "질문"으로 받아 1시간 안전 한계까지 헛돈다
   - 셸 hint 목록 `_SHELL_CMD_HINTS`: `uv `, `python `, `npm `, `git `, `docker `, `make `, `ls `, `./` 등 (전체는 intent.py 참조)
 - 코드펜스 처리: `_looks_like_shell_attempt`는 백틱을 벗겨낸 뒤 hint 판정, `_extract_shell_command`는 코드펜스 제거(여는 펜스 뒤 "언어\n"만 언어 식별자로 제거, `` ```uv run `` 처럼 개행 없이 붙으면 명령 보존) 후 앞쪽 빈 줄/`#` 주석 라인을 건너뛰고 명령 추출 — 코드블록으로 감싼 셸 명령이 question으로 새는 오라우팅 방지
@@ -151,12 +150,13 @@ pyproject.toml         # 의존성 및 스크립트 정의
   - `_SLASH_ADMIN_COMMANDS` — 슬래시 전용 매칭 (`/restart`). "재시작"은 일상 대화 오매칭이 잦아 슬래시로만 트리거
 - task_control:
   - `/stop [task_id]` — 슬래시 전용 중단/목록 (자연어 "중단/멈춰/stop" 매칭 제거)
-  - `_TASK_LIST_KEYWORDS` (`태스크`, `task`) — 자연어 목록 조회만 허용
+  - 자연어 목록 조회(`태스크`/`task` 키워드 매칭)는 제거됨 — 해당 단어가 든 일반 질문까지 목록 조회로 오매칭돼 항상 "실행 중인 태스크가 없습니다."로 응답하던 문제 방지. 목록은 인자 없는 `/stop`으로만 조회
 
 ### runner.py
 - `_build_allowed_tools(project)` — 프로젝트 mcp_tools 기반 동적 도구 목록 생성
-- `run_claude(project, command, args, task) -> RunResult`
-- `claude -p "/<command> <args>" --output-format text --allowedTools <동적>` 실행
+- `run_claude(project, command, args, task) -> RunResult` — `/<command> <args>` 슬래시 명령 실행 (`--auto` 자동 부착)
+- `run_free_prompt(project, prompt, task) -> RunResult` — 슬래시가 아닌 자유 문장 프롬프트를 그대로 실행 (project_prompt passthrough용). `run_claude`와 실행 로직은 내부 `_run_prompt()`로 공유
+- 실행: `claude -p "<prompt>" --output-format text --permission-mode bypassPermissions`
 - stdout 라인별 스트리밍 → `task.output_lines`에 누적
 - 타임아웃 3600초, 출력 3900자 제한
 
@@ -168,11 +168,12 @@ pyproject.toml         # 의존성 및 스크립트 정의
 - 인텐트별 처리(모두 즉시 시작 알림 + 백그라운드 실행):
   - command → `_run_and_report` (`run_claude`)
   - shell_exec → `_run_shell_and_report`
+  - project_prompt → `_run_prompt_and_report` (`run_free_prompt`) — 풀 권한 자유 문장 실행. `/stop`으로 취소 시 결과 대신 취소 안내
   - status/question → `_run_chat_question_and_report` (`chat.answer_question`)
   - db_query → `_run_db_query_and_report` 또는 `_run_db_query_export_and_report`
   - task_control → 태스크 목록/중단 (동기 응답)
 - 동시성 제한 세마포어 (각 3개, `MAX_CONCURRENT_CHAT`/`MAX_CONCURRENT_TASK`):
-  - `_task_semaphore` — command/shell_exec 실행
+  - `_task_semaphore` — command/shell_exec/project_prompt 실행
   - `_chat_semaphore` — status/question 답변, db_query 조회/내보내기
 - `confirm_execute` / `cancel_execute` 액션 핸들러 (레거시 호환용)
 - `confirm_install_claude` 액션 (claude 설치 확인 버튼) — `npm install -g @anthropic-ai/claude-code` 실행 (타임아웃 180초, 출력 3000자 제한)
@@ -188,13 +189,13 @@ pyproject.toml         # 의존성 및 스크립트 정의
   - 호출자(`handlers._run_chat_question_and_report`)가 백그라운드 태스크로 실행. 안전 한계 `CHAT_SAFETY_TIMEOUT = 3600`초 — 사용자는 `/stop {ID}`로 언제든 취소
   - `task` 인자: TaskInfo 전달 시 서브프로세스 핸들을 등록해 `stop_task()`로 중단 가능
 - `_is_status_query()` — 실행 중 태스크 상태 확인성 질문 감지 시 `--model sonnet`으로 빠르게 응답
-- `_build_system_prompt(target_project, wiki_projects, db_instructions)` — 동적 시스템 프롬프트
+- `_build_system_prompt(target_project, db_instructions)` — 동적 시스템 프롬프트
 - target_project에 따라 CWD, 도구, 프롬프트가 달라짐
 - status_paths 설정된 프로젝트는 해당 경로의 코드/로그 읽기
 
 ### db_query.py
-- `run_db_query(question, project, wiki_path, task=None)` — 자연어 DB 조회 (PostgreSQL + SQLite, 타임아웃 `DB_QUERY_TIMEOUT = 120`초)
-- `run_db_query_export(question, project, wiki_path, task=None)` — CSV/Excel 내보내기 (타임아웃 `DB_EXPORT_TIMEOUT = 180`초)
+- `run_db_query(question, project, task=None)` — 자연어 DB 조회 (PostgreSQL + SQLite, 타임아웃 `DB_QUERY_TIMEOUT = 120`초)
+- `run_db_query_export(question, project, task=None)` — CSV/Excel 내보내기 (타임아웃 `DB_EXPORT_TIMEOUT = 180`초)
   - 두 함수 모두 `task` 인자로 TaskInfo를 받으면 서브프로세스를 등록해 자연어 중단(`{ID}번 중단`)을 지원
   - Claude CLI가 psql/sqlite3 결과를 임시 CSV로 저장 → `_csv_to_excel()`로 Excel 변환
   - `ExportResult(summary, excel_path, error)` 반환

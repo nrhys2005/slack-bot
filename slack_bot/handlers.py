@@ -16,7 +16,7 @@ from slack_bot.chat import answer_question
 from slack_bot.config import ProjectConfig, load_projects
 from slack_bot.db_query import run_db_query, run_db_query_export
 from slack_bot.intent import _TASK_ID_RE, Intent, parse_intent
-from slack_bot.runner import run_claude
+from slack_bot.runner import run_claude, run_free_prompt
 from slack_bot.security import check_auth, make_safe_env, redact_output
 from slack_bot.task_manager import TaskManager
 
@@ -82,7 +82,6 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
     projects = app_config.projects
 
     # 프로젝트 분류
-    wiki_projects = [p for p in projects.values() if p.wiki]
     db_projects = {n: p for n, p in projects.items() if p.db is not None}
 
     # ----------------------------------------------------------------
@@ -163,6 +162,10 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
                 )
             elif intent.type == "shell_exec":
                 delegated = await _handle_shell_exec_intent(
+                    intent, user_id, channel, thread_ts, event_ts, say, client
+                )
+            elif intent.type == "project_prompt":
+                delegated = await _handle_project_prompt_intent(
                     intent, user_id, channel, thread_ts, event_ts, say, client
                 )
             elif intent.type == "task_control":
@@ -371,6 +374,66 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
         )
         return True
 
+    async def _handle_project_prompt_intent(
+        intent: Intent,
+        user_id: str,
+        channel: str,
+        thread_ts: str,
+        event_ts: str,
+        say,
+        client,
+    ) -> bool:
+        """프로젝트 자유 문장 프롬프트 → 해당 프로젝트에서 `claude -p` 풀 권한 실행.
+
+        알려진 명령어/셸 hint/상태·DB 키워드에 걸리지 않은 자유 문장을 위키식
+        읽기전용 Q&A로 흘리지 않고, 프로젝트 디렉토리에서 bypassPermissions로
+        그대로 실행한다. 백그라운드 태스크를 띄웠으면 True를 반환한다.
+        """
+        project = projects.get(intent.project)
+        if not project:
+            project_list = ", ".join(f"`{n}`" for n in projects)
+            await say(
+                f"프로젝트를 식별하지 못했습니다. 등록된 프로젝트: {project_list}",
+                thread_ts=thread_ts,
+            )
+            return False
+
+        prompt = intent.args or intent.raw_text
+        prompt_display = prompt if len(prompt) <= 80 else prompt[:80] + "…"
+
+        task_manager.cleanup_old()
+        task = await task_manager.create_task(
+            intent.project,
+            "prompt",
+            prompt,
+            user_id,
+            channel,
+            thread_ts=thread_ts,
+        )
+
+        bg_task = asyncio.create_task(
+            _run_prompt_and_report(
+                app,
+                task_manager,
+                project,
+                task,
+                prompt_display,
+                _task_semaphore,
+                event_ts=event_ts,
+            )
+        )
+        _background_tasks.add(bg_task)
+        bg_task.add_done_callback(_background_tasks.discard)
+        bg_task.add_done_callback(_log_task_exception)
+
+        await say(
+            f":rocket: *{intent.project}* 프롬프트 실행을 시작합니다. "
+            f"(태스크 ID: {task.task_id}, 취소: `/stop {task.task_id}`)\n"
+            f"> {prompt_display}",
+            thread_ts=thread_ts,
+        )
+        return True
+
     async def _handle_unknown_shell(
         intent: Intent,
         thread_ts: str,
@@ -510,8 +573,6 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
             )
             return False
 
-        wiki_path = wiki_projects[0].path if wiki_projects else None
-
         task_manager.cleanup_old()
         db_task = await task_manager.create_task(
             db_project.name,
@@ -538,7 +599,6 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
                     thread_ts=thread_ts,
                     user_id=user_id,
                     db_project=db_project,
-                    wiki_path=wiki_path,
                     semaphore=_chat_semaphore,
                     event_ts=event_ts,
                 )
@@ -559,7 +619,6 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
                     thread_ts=thread_ts,
                     user_id=user_id,
                     db_project=db_project,
-                    wiki_path=wiki_path,
                     semaphore=_chat_semaphore,
                     event_ts=event_ts,
                 )
@@ -1469,6 +1528,90 @@ async def _run_and_report(
         await _remove_eyes_reaction(app, task.channel, event_ts)
 
 
+async def _run_prompt_and_report(
+    app: AsyncApp,
+    task_manager: TaskManager,
+    project: ProjectConfig,
+    task,
+    prompt_display: str,
+    semaphore: asyncio.Semaphore,
+    event_ts: str | None = None,
+) -> None:
+    """프로젝트 자유 문장 프롬프트를 `claude -p`로 실행하고 결과를 보고한다."""
+    try:
+        async with semaphore:
+            result = await run_free_prompt(project, task.args, task)
+
+        # /stop으로 취소된 경우 결과 대신 취소 안내 (complete_task는 stopped를
+        # 덮어쓰지 않음)
+        if task.status == "stopped":
+            cancel_kwargs: dict = dict(
+                channel=task.channel,
+                text=f":octagonal_sign: 프롬프트 실행이 취소되었습니다. (ID: {task.task_id})",
+            )
+            if task.thread_ts:
+                cancel_kwargs["thread_ts"] = task.thread_ts
+            await app.client.chat_postMessage(**cancel_kwargs)
+            return
+
+        task_manager.complete_task(task.task_id, result.success)
+
+        status = "완료" if result.success else "실패"
+        emoji = ":white_check_mark:" if result.success else ":x:"
+
+        output = result.output
+        if output:
+            output, was_redacted = redact_output(output)
+            if was_redacted:
+                output += (
+                    "\n\n:lock: 일부 민감 정보가 보안 정책에 의해 마스킹되었습니다."
+                )
+
+        blocks = [
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": (
+                        f"{emoji} *{task.project_name}* 프롬프트 {status} "
+                        f"(ID: {task.task_id}, {task.elapsed_display})\n"
+                        f"실행자: <@{task.user}>\n> {prompt_display}"
+                    ),
+                },
+            },
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"```\n{output}\n```" if output else "_출력 없음_",
+                },
+            },
+        ]
+
+        msg_kwargs: dict = dict(
+            channel=task.channel, blocks=blocks, text=f"{status}: {prompt_display}"
+        )
+        if task.thread_ts:
+            msg_kwargs["thread_ts"] = task.thread_ts
+        await app.client.chat_postMessage(**msg_kwargs)
+
+    except Exception:
+        logger.exception("프롬프트 실행 중 에러 발생")
+        task_manager.complete_task(task.task_id, False)
+        err_kwargs: dict = dict(
+            channel=task.channel,
+            text=(
+                f":warning: *{task.project_name}* 프롬프트 실행 중 에러가 발생했습니다. "
+                f"로그를 확인해주세요."
+            ),
+        )
+        if task.thread_ts:
+            err_kwargs["thread_ts"] = task.thread_ts
+        await app.client.chat_postMessage(**err_kwargs)
+    finally:
+        await _remove_eyes_reaction(app, task.channel, event_ts)
+
+
 async def _run_db_query_export_and_report(
     app: AsyncApp,
     task_manager: TaskManager,
@@ -1478,14 +1621,13 @@ async def _run_db_query_export_and_report(
     thread_ts: str,
     user_id: str,
     db_project: ProjectConfig,
-    wiki_path: str | None,
     semaphore: asyncio.Semaphore,
     event_ts: str | None = None,
 ) -> None:
     """DB 조회 → CSV → Excel → Slack 파일 업로드."""
     try:
         async with semaphore:
-            result = await run_db_query_export(question, db_project, wiki_path, task=task)
+            result = await run_db_query_export(question, db_project, task=task)
 
         if task.status == "stopped":
             await app.client.chat_postMessage(
@@ -1552,13 +1694,12 @@ async def _run_db_query_and_report(
     thread_ts: str,
     user_id: str,
     db_project: ProjectConfig,
-    wiki_path: str | None,
     semaphore: asyncio.Semaphore,
     event_ts: str | None = None,
 ) -> None:
     try:
         async with semaphore:
-            answer = await run_db_query(question, db_project, wiki_path, task=task)
+            answer = await run_db_query(question, db_project, task=task)
 
         if task.status == "stopped":
             await app.client.chat_postMessage(

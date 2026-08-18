@@ -83,11 +83,17 @@ class TestTaskControlIntent:
         assert intent.type == "task_control"
         assert intent.command == "list"
 
-    def test_task_list_natural_language(self):
-        """'태스크' 자연어는 목록 조회로 매칭된다."""
+    def test_task_list_natural_language_no_longer_matches(self):
+        """'태스크' 자연어는 목록 조회로 매칭되지 않는다.
+
+        "태스크"라는 단어가 든 일반 질문까지 목록 조회로 오매칭돼 항상
+        "실행 중인 태스크가 없습니다."로 응답하던 문제를 방지한다.
+        목록 조회는 이제 `/stop`(인자 없음) 슬래시로만 트리거된다.
+        """
         intent = parse_intent("실행중인 태스크 보여줘", self._projects)
-        assert intent.type == "task_control"
-        assert intent.command == "list"
+        assert not (
+            intent.type == "task_control" and intent.command == "list"
+        ), "'태스크' 자연어가 task_control/list로 오매칭됨"
 
     @pytest.mark.parametrize(
         "text",
