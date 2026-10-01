@@ -38,6 +38,7 @@ slack_bot/
 ├── chat.py            # Claude CLI로 태스크 출력 분석, 프로젝트 상태 파악, 질문 답변
 ├── db_query.py        # DB 프로젝트 모델 기반 자연어→SQL→psql 실행
 ├── task_manager.py    # TaskInfo/TaskManager — 실행 중 태스크 추적, 출력 누적
+├── attachments.py     # Slack 첨부파일(이미지/표/문서) 다운로드 → claude -p가 Read 할 프롬프트 노트 생성
 └── security.py        # 서브프로세스 env 생성, 출력 마스킹, 인증, rate limit, 감사 로깅
 tests/                 # pytest 테스트 (인텐트 라우팅, 태스크 매니저, 핸들러/서브프로세스 안정성, 인증 로그인)
 .claude/               # 이 저장소 자체의 하네스 설정 (skills: harness/plan/develop/review, agents)
@@ -193,6 +194,14 @@ pyproject.toml         # 의존성 및 스크립트 정의
 - target_project에 따라 CWD, 도구, 프롬프트가 달라짐
 - status_paths 설정된 프로젝트는 해당 경로의 코드/로그 읽기
 
+### attachments.py
+- Slack 메시지에 첨부된 파일(이미지·CSV/Excel 표·PDF·문서 등)을 임시 디렉토리로 받아 `claude -p`가 Read 도구로 직접 열 수 있게 한다. Claude는 멀티모달이라 이미지도 Read로 처리된다.
+- `download_slack_files(files, token, dest_dir=None) -> (list[DownloadedFile], list[str])` — Slack `files` 배열을 Bearer 토큰 인증(`url_private_download`)으로 다운로드. best-effort — 일부 실패해도 예외 없이 (성공 목록, 실패 사유 목록) 반환
+- `build_attachment_note(downloaded, errors) -> str` — 받은 파일의 절대경로/MIME을 나열해 프롬프트 말미에 덧붙일 안내 텍스트 생성. 첨부·실패가 모두 없으면 빈 문자열
+- `_safe_dest_path()` — 파일명의 경로 구분자/상위 참조를 제거해 dest_dir 밖으로 새지 않게 하고 충돌 시 `name_1.ext`로 dedup
+- 안전장치: 파일당 50MB(`MAX_FILE_BYTES`), 메시지당 10개(`MAX_FILES`), 세션 타임아웃 120초. 선언된 size가 상한을 넘거나 스트리밍 중 초과하면 부분 파일을 지우고 실패로 기록
+- handlers 배선: `handle_mention`/`handle_dm`이 `event.get("files")`를 `_handle_message`로 넘긴다. DM 핸들러는 파일 업로드가 `subtype="file_share"`로 도착하므로 이 subtype만 통과시킨다(그 외 subtype은 무시). `_handle_message`는 인텐트 분류에 영향을 주지 않도록 원본 질문으로 `parse_intent` 후, 첨부 노트를 claude에 도달하는 필드(question/status→`question`, db_query→`raw_text`, project_prompt→`args`)에만 주입한다. 텍스트 없이 파일만 올라오면 기본 질문을 세워 question 경로로 흐른다
+
 ### db_query.py
 - `run_db_query(question, project, task=None)` — 자연어 DB 조회 (PostgreSQL + SQLite, 타임아웃 `DB_QUERY_TIMEOUT = 120`초)
 - `run_db_query_export(question, project, task=None)` — CSV/Excel 내보내기 (타임아웃 `DB_EXPORT_TIMEOUT = 180`초)
@@ -244,5 +253,6 @@ pyproject.toml         # 의존성 및 스크립트 정의
 - **Interactivity** 활성화 (Socket Mode에서 자동, 확인 버튼용)
 - **Event Subscriptions** → Subscribe to bot events: `app_mention`, `message.im`
 - **Slash Commands**: `/restart`, `/stop` 등록 (Socket Mode에서는 Request URL 불필요)
-- **Bot Token Scopes**: `chat:write`, `commands`, `files:write`, `app_mentions:read`, `channels:history`, `groups:history`, `mpim:history`, `im:history`, `reactions:write` — 스코프/슬래시 커맨드 추가 후 앱 재설치 필요
+- **Bot Token Scopes**: `chat:write`, `commands`, `files:write`, `files:read`, `app_mentions:read`, `channels:history`, `groups:history`, `mpim:history`, `im:history`, `reactions:write` — 스코프/슬래시 커맨드 추가 후 앱 재설치 필요
+  - `files:read`가 없으면 첨부파일 다운로드(`url_private_download`)가 403으로 실패한다 — 첨부/이미지/표 읽기 기능에 필수
   - `commands` 스코프가 누락되거나 재설치를 빠뜨리면 `/restart`/`/stop` DM 입력이 무반응이 된다 — Slack이 슬래시로 가로채지만 봇에 페이로드가 도달하지 않음

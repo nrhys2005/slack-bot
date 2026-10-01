@@ -12,6 +12,7 @@ from dataclasses import dataclass
 
 from slack_bolt.async_app import AsyncApp
 
+from slack_bot.attachments import build_attachment_note, download_slack_files
 from slack_bot.chat import answer_question
 from slack_bot.config import ProjectConfig, load_projects
 from slack_bot.db_query import run_db_query, run_db_query_export
@@ -99,9 +100,11 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
         *,
         is_thread: bool = True,
         channel_type: str = "channel",
+        files: list[dict] | None = None,
     ) -> None:
         """@멘션과 DM 공통 메시지 처리 흐름."""
-        if not question:
+        files = files or []
+        if not question and not files:
             await say(
                 "무엇을 도와드릴까요? 프로젝트 명령 실행, 상태 확인, 질문 등을 할 수 있습니다.",
                 thread_ts=thread_ts,
@@ -145,8 +148,35 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
         except Exception:
             logger.warning("리액션 추가 실패", exc_info=True)
 
-        # 인텐트 파싱
+        # 첨부파일이 있으면 임시 디렉토리로 받아 claude -p가 Read 할 수 있게 한다.
+        # 다운로드 실패는 흐름을 막지 않는다(best-effort). 텍스트 없이 파일만
+        # 올라온 경우 기본 질문을 세워 question 경로로 흐르게 한다.
+        attachment_note = ""
+        if files:
+            token = getattr(client, "token", None) or os.environ.get(
+                "SLACK_BOT_TOKEN", ""
+            )
+            try:
+                downloaded, dl_errors = await download_slack_files(files, token)
+                attachment_note = build_attachment_note(downloaded, dl_errors)
+            except Exception:
+                logger.warning("첨부파일 다운로드 처리 실패", exc_info=True)
+            if not question:
+                question = "첨부된 파일을 확인하고 내용을 정리해줘."
+
+        # 인텐트 파싱 — 첨부 노트가 분류에 영향을 주지 않도록 원본 질문으로 파싱한다.
         intent = parse_intent(question, projects)
+
+        # 첨부 노트를 claude에 도달하는 필드에 주입한다. 명령/셸 실행 인텐트는
+        # 첨부와 무관하므로 건드리지 않는다.
+        #   - question/status  : question 변수를 answer_question에 그대로 넘김
+        #   - db_query          : intent.raw_text 사용
+        #   - project_prompt    : intent.args(=원문) 사용
+        if attachment_note:
+            question = f"{question}{attachment_note}"
+            intent.raw_text = f"{intent.raw_text}{attachment_note}"
+            if intent.type == "project_prompt" and intent.args:
+                intent.args = f"{intent.args}{attachment_note}"
 
         # 백그라운드 태스크로 처리가 위임되면 True. 이 경우 리액션 제거를
         # 백그라운드 태스크 완료 시점으로 넘기므로 여기서는 제거하지 않는다.
@@ -741,6 +771,7 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
             client,
             is_thread=bool(event.get("thread_ts")),
             channel_type=event.get("channel_type", "channel"),
+            files=event.get("files") or [],
         )
 
     @app.event("message")
@@ -748,7 +779,12 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
         """1:1 DM 메시지 처리"""
         if event.get("channel_type") != "im":
             return
-        if event.get("bot_id") or event.get("subtype"):
+        if event.get("bot_id"):
+            return
+        # 파일 업로드 메시지는 subtype="file_share"로 도착할 수 있으므로 통과시킨다.
+        # 그 외 편집/삭제 등 subtype 메시지는 무시한다.
+        subtype = event.get("subtype")
+        if subtype and subtype != "file_share":
             return
 
         raw_text = event.get("text", "")
@@ -767,6 +803,7 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
             client,
             is_thread=bool(event.get("thread_ts")),
             channel_type="im",
+            files=event.get("files") or [],
         )
 
     # ----------------------------------------------------------------

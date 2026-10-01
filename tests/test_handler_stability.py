@@ -785,6 +785,179 @@ class TestUnknownShellRouting:
         assert "ra-backend" in msg_text
 
 
+def _register_event_handlers(projects=None):
+    """register_handlers를 mock app으로 호출하고 @app.event 콜백을 캡쳐."""
+    from slack_bot.config import AppConfig, SecurityConfig
+    from slack_bot.handlers import register_handlers
+
+    events: dict = {}
+
+    def capture_event(event_type):
+        def decorator(func):
+            events[event_type] = func
+            return func
+        return decorator
+
+    app = MagicMock()
+    app.event = capture_event
+    app.action = lambda action_id: lambda f: f
+    app.command = lambda name: lambda f: f
+    # 백그라운드 리포트 태스크가 app.client로 결과를 게시하므로 awaitable로 둔다.
+    app.client.chat_postMessage = AsyncMock()
+    app.client.chat_delete = AsyncMock()
+    app.client.reactions_remove = AsyncMock()
+    app.client.reactions_add = AsyncMock()
+
+    task_manager = MagicMock()
+    task_manager.get_running_tasks.return_value = []
+    task_manager.get_tasks_for_channel.return_value = []
+    task_manager.cleanup_old = MagicMock()
+
+    async def _create_task(*args, **kwargs):
+        t = MagicMock()
+        t.task_id = "001"
+        t.status = "running"
+        return t
+
+    task_manager.create_task = AsyncMock(side_effect=_create_task)
+
+    with patch("slack_bot.handlers.load_projects") as mock_load:
+        mock_load.return_value = AppConfig(
+            projects=projects or {},
+            security=SecurityConfig(allowed_users={"admin": ["*"]}),
+        )
+        register_handlers(app, task_manager)
+
+    return events, task_manager
+
+
+async def _drain_background_tasks():
+    pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
+
+
+class TestAttachmentFlow:
+    """첨부파일이 다운로드되어 질문 프롬프트에 주입되는지 — 엔드투엔드 배선."""
+
+    @pytest.mark.asyncio
+    async def test_dm_file_share_subtype_not_dropped(self):
+        """파일 업로드 DM(subtype=file_share)이 무시되지 않고 다운로드까지 간다."""
+        from slack_bot.attachments import DownloadedFile
+
+        events, _ = _register_event_handlers()
+        handler = events["message"]
+
+        say = AsyncMock()
+        client = MagicMock()
+        client.token = "xoxb-test"
+        client.reactions_add = AsyncMock()
+        client.reactions_remove = AsyncMock()
+        client.conversations_history = AsyncMock(return_value={"messages": []})
+        client.chat_postMessage = AsyncMock()
+        client.chat_delete = AsyncMock()
+
+        say.return_value = {"ts": "1.0"}
+
+        event = {
+            "channel_type": "im",
+            "subtype": "file_share",
+            "text": "이 표 분석해줘",
+            "ts": "1000.0",
+            "user": "U1",
+            "channel": "D123",
+            "files": [{"name": "data.csv", "url_private_download": "http://x"}],
+        }
+
+        captured = {}
+
+        async def fake_answer(question, *args, **kwargs):
+            captured["question"] = question
+            return "분석 결과"
+
+        with patch(
+            "slack_bot.handlers.download_slack_files",
+            new_callable=AsyncMock,
+            return_value=(
+                [DownloadedFile("/tmp/x/data.csv", "data.csv", "text/csv", 10)],
+                [],
+            ),
+        ) as mock_dl, patch(
+            "slack_bot.handlers.answer_question",
+            new=fake_answer,
+        ):
+            await handler(event=event, say=say, client=client)
+            await _drain_background_tasks()
+
+        # 다운로드가 호출됐고, 받은 파일 경로가 질문 프롬프트에 주입됐다.
+        mock_dl.assert_awaited_once()
+        assert mock_dl.await_args.args[0] == event["files"]
+        assert "/tmp/x/data.csv" in captured["question"]
+        assert "이 표 분석해줘" in captured["question"]
+
+    @pytest.mark.asyncio
+    async def test_non_file_subtype_still_dropped(self):
+        """file_share 외 subtype(message_changed 등)은 여전히 무시된다."""
+        events, _ = _register_event_handlers()
+        handler = events["message"]
+
+        say = AsyncMock()
+        client = MagicMock()
+        client.reactions_add = AsyncMock()
+
+        event = {
+            "channel_type": "im",
+            "subtype": "message_changed",
+            "text": "edited",
+            "ts": "1000.0",
+            "user": "U1",
+            "channel": "D123",
+        }
+
+        await handler(event=event, say=say, client=client)
+        say.assert_not_awaited()
+        client.reactions_add.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_text_only_message_skips_download(self):
+        """첨부가 없으면 download_slack_files를 호출하지 않는다."""
+        events, _ = _register_event_handlers()
+        handler = events["message"]
+
+        say = AsyncMock()
+        client = MagicMock()
+        client.token = "xoxb-test"
+        client.reactions_add = AsyncMock()
+        client.reactions_remove = AsyncMock()
+        client.conversations_history = AsyncMock(return_value={"messages": []})
+        client.chat_postMessage = AsyncMock()
+        client.chat_delete = AsyncMock()
+
+        say.return_value = {"ts": "1.0"}
+
+        event = {
+            "channel_type": "im",
+            "text": "그냥 질문",
+            "ts": "1000.0",
+            "user": "U1",
+            "channel": "D123",
+        }
+
+        with patch(
+            "slack_bot.handlers.download_slack_files",
+            new_callable=AsyncMock,
+            return_value=([], []),
+        ) as mock_dl, patch(
+            "slack_bot.handlers.answer_question",
+            new_callable=AsyncMock,
+            return_value="답변",
+        ):
+            await handler(event=event, say=say, client=client)
+            await _drain_background_tasks()
+
+        mock_dl.assert_not_awaited()
+
+
 class TestSlashCommandRestart:
     """/restart 슬래시 커맨드 핸들러 — Slack에 등록된 명령이 DM/채널에서 동작하도록."""
 
