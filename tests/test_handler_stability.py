@@ -822,6 +822,12 @@ def _register_event_handlers(projects=None):
 
     task_manager.create_task = AsyncMock(side_effect=_create_task)
 
+    async def _create_task_if_absent(*args, **kwargs):
+        t = await _create_task()
+        return t, True  # 기본: 중복 없음 → 생성됨
+
+    task_manager.create_task_if_absent = AsyncMock(side_effect=_create_task_if_absent)
+
     with patch("slack_bot.handlers.load_projects") as mock_load:
         mock_load.return_value = AppConfig(
             projects=projects or {},
@@ -1088,7 +1094,7 @@ class TestEventDedup:
             await _drain_background_tasks()
 
         # 태스크 생성은 첫 이벤트에서만
-        assert task_manager.create_task.await_count == 1
+        assert task_manager.create_task_if_absent.await_count == 1
         # 재전송은 리액션조차 추가하지 않고 즉시 반환
         assert client.reactions_add.await_count == 1
 
@@ -1113,7 +1119,55 @@ class TestEventDedup:
             await handler(event=_command_event("2000.0"), say=say, client=client)
             await _drain_background_tasks()
 
-        assert task_manager.create_task.await_count == 2
+        assert task_manager.create_task_if_absent.await_count == 2
+
+
+def _trader_db_projects():
+    """db 설정이 있는 trader 프로젝트 — db_query 인텐트 라우팅용."""
+    from slack_bot.config import DBConfig, ProjectConfig
+
+    return {
+        "trader": ProjectConfig(
+            name="trader",
+            path="/tmp/trader",
+            description="트레이더",
+            db=DBConfig(db_type="sqlite", db_path="db.sqlite3"),
+        ),
+    }
+
+
+def _shell_event(ts: str = "1000.0"):
+    return {
+        "text": "<@U0BOT> trader 에서 uv run pytest 실행해",
+        "ts": ts,
+        "user": "U1",
+        "channel": "C123",
+        "channel_type": "channel",
+    }
+
+
+def _db_event(ts: str = "1000.0", *, export: bool = False):
+    text = (
+        "<@U0BOT> trader 유저 목록 조회해서 엑셀로 추출해줘"
+        if export
+        else "<@U0BOT> trader 유저 수 조회해줘"
+    )
+    return {
+        "text": text,
+        "ts": ts,
+        "user": "U1",
+        "channel": "C123",
+        "channel_type": "channel",
+    }
+
+
+def _mark_duplicate(task_manager, task_id: str = "007"):
+    """create_task_if_absent가 (기존 태스크, False)를 반환하도록 오버라이드."""
+    existing = MagicMock()
+    existing.task_id = task_id
+    existing.status = "running"
+    task_manager.create_task_if_absent = AsyncMock(return_value=(existing, False))
+    return existing
 
 
 class TestDuplicateRunningGuard:
@@ -1122,10 +1176,7 @@ class TestDuplicateRunningGuard:
     @pytest.mark.asyncio
     async def test_command_skipped_when_duplicate_running(self):
         events, task_manager = _register_event_handlers(_trader_projects())
-
-        existing = MagicMock()
-        existing.task_id = "007"
-        task_manager.find_running_duplicate.return_value = existing
+        _mark_duplicate(task_manager)
 
         handler = events["app_mention"]
         say = AsyncMock()
@@ -1140,8 +1191,8 @@ class TestDuplicateRunningGuard:
             await handler(event=_command_event("3000.0"), say=say, client=client)
             await _drain_background_tasks()
 
-        # 새 태스크를 만들지도, claude -p를 돌리지도 않는다
-        task_manager.create_task.assert_not_awaited()
+        # 원자 경로를 정확히 한 번 거치고, claude -p는 돌지 않는다
+        task_manager.create_task_if_absent.assert_awaited_once()
         mock_run.assert_not_awaited()
         # 사용자에게 중복 안내(기존 태스크 ID 포함)
         msg = _say_text(say)
@@ -1151,7 +1202,6 @@ class TestDuplicateRunningGuard:
     async def test_command_runs_when_no_duplicate(self):
         """중복이 없으면 정상적으로 태스크를 생성한다 (가드가 정상 실행을 막지 않음)."""
         events, task_manager = _register_event_handlers(_trader_projects())
-        task_manager.find_running_duplicate.return_value = None
 
         handler = events["app_mention"]
         say = AsyncMock()
@@ -1168,4 +1218,142 @@ class TestDuplicateRunningGuard:
             await handler(event=_command_event("4000.0"), say=say, client=client)
             await _drain_background_tasks()
 
-        task_manager.create_task.assert_awaited_once()
+        task_manager.create_task_if_absent.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_shell_skipped_when_duplicate_running(self):
+        events, task_manager = _register_event_handlers(_trader_projects())
+        _mark_duplicate(task_manager)
+
+        handler = events["app_mention"]
+        say = AsyncMock()
+        client = MagicMock()
+        client.reactions_add = AsyncMock()
+        client.reactions_remove = AsyncMock()
+        client.chat_postMessage = AsyncMock()
+
+        with patch(
+            "slack_bot.handlers._run_shell_and_report", new_callable=AsyncMock
+        ) as mock_run:
+            await handler(event=_shell_event("3100.0"), say=say, client=client)
+            await _drain_background_tasks()
+
+        task_manager.create_task_if_absent.assert_awaited_once()
+        mock_run.assert_not_awaited()
+        msg = _say_text(say)
+        assert "이미" in msg and "007" in msg
+
+    @pytest.mark.asyncio
+    async def test_shell_runs_when_no_duplicate(self):
+        """shell 중복이 없으면 정상적으로 백그라운드 실행된다."""
+        events, task_manager = _register_event_handlers(_trader_projects())
+
+        handler = events["app_mention"]
+        say = AsyncMock()
+        client = MagicMock()
+        client.reactions_add = AsyncMock()
+        client.reactions_remove = AsyncMock()
+        client.chat_postMessage = AsyncMock()
+
+        with patch(
+            "slack_bot.handlers._run_shell_and_report", new_callable=AsyncMock
+        ) as mock_run:
+            await handler(event=_shell_event("4100.0"), say=say, client=client)
+            await _drain_background_tasks()
+
+        task_manager.create_task_if_absent.assert_awaited_once()
+        mock_run.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_db_query_skipped_when_duplicate_running(self):
+        events, task_manager = _register_event_handlers(_trader_db_projects())
+        _mark_duplicate(task_manager)
+
+        handler = events["app_mention"]
+        say = AsyncMock()
+        client = MagicMock()
+        client.reactions_add = AsyncMock()
+        client.reactions_remove = AsyncMock()
+        client.chat_postMessage = AsyncMock()
+
+        with patch(
+            "slack_bot.handlers._run_db_query_and_report", new_callable=AsyncMock
+        ) as mock_run:
+            await handler(event=_db_event("3200.0"), say=say, client=client)
+            await _drain_background_tasks()
+
+        task_manager.create_task_if_absent.assert_awaited_once()
+        mock_run.assert_not_awaited()
+        msg = _say_text(say)
+        assert "이미" in msg and "007" in msg
+
+    @pytest.mark.asyncio
+    async def test_db_query_runs_when_no_duplicate(self):
+        """db 일반 조회 중복이 없으면 정상적으로 백그라운드 실행된다."""
+        events, task_manager = _register_event_handlers(_trader_db_projects())
+
+        handler = events["app_mention"]
+        say = AsyncMock()
+        client = MagicMock()
+        client.reactions_add = AsyncMock()
+        client.reactions_remove = AsyncMock()
+        client.chat_postMessage = AsyncMock()
+
+        with patch(
+            "slack_bot.handlers._run_db_query_and_report", new_callable=AsyncMock
+        ) as mock_run:
+            await handler(event=_db_event("4200.0"), say=say, client=client)
+            await _drain_background_tasks()
+
+        task_manager.create_task_if_absent.assert_awaited_once()
+        mock_run.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_db_export_skipped_when_duplicate_running(self):
+        events, task_manager = _register_event_handlers(_trader_db_projects())
+        _mark_duplicate(task_manager)
+
+        handler = events["app_mention"]
+        say = AsyncMock()
+        client = MagicMock()
+        client.reactions_add = AsyncMock()
+        client.reactions_remove = AsyncMock()
+        client.chat_postMessage = AsyncMock()
+
+        with patch(
+            "slack_bot.handlers._run_db_query_export_and_report",
+            new_callable=AsyncMock,
+        ) as mock_run:
+            await handler(
+                event=_db_event("3300.0", export=True), say=say, client=client
+            )
+            await _drain_background_tasks()
+
+        task_manager.create_task_if_absent.assert_awaited_once()
+        mock_run.assert_not_awaited()
+        msg = _say_text(say)
+        assert "이미" in msg and "007" in msg
+
+    @pytest.mark.asyncio
+    async def test_db_export_runs_when_no_duplicate(self):
+        """db export 중복이 없으면 정상적으로 백그라운드 실행된다."""
+        events, task_manager = _register_event_handlers(_trader_db_projects())
+
+        handler = events["app_mention"]
+        say = AsyncMock()
+        client = MagicMock()
+        client.reactions_add = AsyncMock()
+        client.reactions_remove = AsyncMock()
+        client.chat_postMessage = AsyncMock()
+
+        with patch(
+            "slack_bot.handlers._run_db_query_export_and_report",
+            new_callable=AsyncMock,
+        ) as mock_run:
+            await handler(
+                event=_db_event("4300.0", export=True), say=say, client=client
+            )
+            await _drain_background_tasks()
+
+        task_manager.create_task_if_absent.assert_awaited_once()
+        mock_run.assert_awaited_once()

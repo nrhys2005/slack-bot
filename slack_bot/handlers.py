@@ -409,22 +409,10 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
 
         # 동일 작업이 이미 실행 중이면 재실행하지 않는다. 같은 멘션이 중복
         # 전달되거나 사용자가 조급해 재전송해도 claude -p 파이프라인이 겹쳐
-        # 돌며 토큰을 배수로 태우는 사고를 막는다.
-        existing = task_manager.find_running_duplicate(
-            intent.project, intent.command, intent.args
-        )
-        if existing is not None:
-            await say(
-                f":warning: *{intent.project}* `{prompt_display}` 은(는) 이미 "
-                f"실행 중입니다 (태스크 ID: {existing.task_id}). 중복 실행을 "
-                f"건너뜁니다. 중단하려면 `/stop {existing.task_id}`.",
-                thread_ts=thread_ts,
-            )
-            return False
-
-        # 태스크 생성 및 백그라운드 실행
+        # 돌며 토큰을 배수로 태우는 사고를 막는다. 중복 조회+생성을
+        # 매니저 락 안에서 원자적으로 수행해 find→create 레이스를 닫는다.
         task_manager.cleanup_old()
-        task = await task_manager.create_task(
+        task, created = await task_manager.create_task_if_absent(
             intent.project,
             intent.command,
             intent.args,
@@ -432,6 +420,14 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
             channel,
             thread_ts=thread_ts,
         )
+        if not created:
+            await say(
+                f":warning: *{intent.project}* `{prompt_display}` 은(는) 이미 "
+                f"실행 중입니다 (태스크 ID: {task.task_id}). 중복 실행을 "
+                f"건너뜁니다. 중단하려면 `/stop {task.task_id}`.",
+                thread_ts=thread_ts,
+            )
+            return False
 
         bg_task = asyncio.create_task(
             _run_and_report(
@@ -483,20 +479,9 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
         prompt_display = prompt if len(prompt) <= 80 else prompt[:80] + "…"
 
         # 동일 자유 문장이 이미 실행 중이면 재실행하지 않는다 (중복 토큰 소모 방지).
-        existing = task_manager.find_running_duplicate(
-            intent.project, "prompt", prompt
-        )
-        if existing is not None:
-            await say(
-                f":warning: *{intent.project}* 동일 요청이 이미 실행 중입니다 "
-                f"(태스크 ID: {existing.task_id}). 중복 실행을 건너뜁니다. "
-                f"중단하려면 `/stop {existing.task_id}`.",
-                thread_ts=thread_ts,
-            )
-            return False
-
+        # 중복 조회+생성을 매니저 락 안에서 원자적으로 수행한다.
         task_manager.cleanup_old()
-        task = await task_manager.create_task(
+        task, created = await task_manager.create_task_if_absent(
             intent.project,
             "prompt",
             prompt,
@@ -504,6 +489,14 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
             channel,
             thread_ts=thread_ts,
         )
+        if not created:
+            await say(
+                f":warning: *{intent.project}* 동일 요청이 이미 실행 중입니다 "
+                f"(태스크 ID: {task.task_id}). 중복 실행을 건너뜁니다. "
+                f"중단하려면 `/stop {task.task_id}`.",
+                thread_ts=thread_ts,
+            )
+            return False
 
         bg_task = asyncio.create_task(
             _run_prompt_and_report(
@@ -575,13 +568,23 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
             )
             return False
 
-        log_path = f"/tmp/slackbot_shell_{int(time.time())}.log"
-
+        # 동일 셸 명령이 이미 실행 중이면 재실행하지 않는다 (중복 실행 방지).
+        # 중복 조회+생성을 매니저 락 안에서 원자적으로 수행한다.
         task_manager.cleanup_old()
-        task = await task_manager.create_task(
+        task, created = await task_manager.create_task_if_absent(
             intent.project, "shell", intent.command, user_id, channel,
             thread_ts=thread_ts,
         )
+        if not created:
+            await say(
+                f":warning: *{intent.project}* `{intent.command}` 은(는) 이미 "
+                f"실행 중입니다 (태스크 ID: {task.task_id}). 중복 실행을 "
+                f"건너뜁니다. 중단하려면 `/stop {task.task_id}`.",
+                thread_ts=thread_ts,
+            )
+            return False
+
+        log_path = f"/tmp/slackbot_shell_{int(time.time())}.log"
 
         # 시작 메시지를 먼저 전송 (백그라운드 태스크보다 먼저)
         await say(
@@ -667,15 +670,27 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
             )
             return False
 
+        # 동일 DB 요청이 이미 실행 중이면 재실행하지 않는다 (중복 실행 방지).
+        # 중복 조회+생성을 매니저 락 안에서 원자적으로 수행한다. 생성 시
+        # 저장되는 args(raw_text[:80])와 동일 값으로 조회해 매칭을 보장한다.
         task_manager.cleanup_old()
-        db_task = await task_manager.create_task(
+        db_command = "db_export" if intent.export else "db"
+        db_task, created = await task_manager.create_task_if_absent(
             db_project.name,
-            "db_export" if intent.export else "db",
+            db_command,
             intent.raw_text[:80],
             user_id,
             channel,
             thread_ts=thread_ts,
         )
+        if not created:
+            await say(
+                f":warning: *{db_project.name}* 동일 DB 요청이 이미 실행 "
+                f"중입니다 (ID: {db_task.task_id}). 중복 실행을 건너뜁니다. "
+                f"중단하려면 `/stop {db_task.task_id}`.",
+                thread_ts=thread_ts,
+            )
+            return False
 
         if intent.export:
             await say(
