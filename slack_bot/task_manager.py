@@ -70,6 +70,25 @@ class TaskManager:
     def get_task(self, task_id: str) -> TaskInfo | None:
         return self._tasks.get(task_id)
 
+    def find_running_duplicate(
+        self, project_name: str, command: str, args: str
+    ) -> TaskInfo | None:
+        """동일 (project, command, args)로 실행 중인 태스크가 있으면 반환.
+
+        같은 요청(예: `harness TRD-128`)이 중복 전달돼 `claude -p`가 겹쳐
+        실행되면 토큰이 배수로 소모되므로, 이미 실행 중인 동일 작업을 찾아
+        호출자가 재실행을 건너뛸 수 있게 한다.
+        """
+        for t in self._tasks.values():
+            if (
+                t.status == "running"
+                and t.project_name == project_name
+                and t.command == command
+                and t.args == args
+            ):
+                return t
+        return None
+
     def get_running_tasks(self) -> list[TaskInfo]:
         return [t for t in self._tasks.values() if t.status == "running"]
 

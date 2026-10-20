@@ -812,6 +812,7 @@ def _register_event_handlers(projects=None):
     task_manager.get_running_tasks.return_value = []
     task_manager.get_tasks_for_channel.return_value = []
     task_manager.cleanup_old = MagicMock()
+    task_manager.find_running_duplicate.return_value = None
 
     async def _create_task(*args, **kwargs):
         t = MagicMock()
@@ -1028,3 +1029,143 @@ class TestSlashCommandStop:
         task_manager.stop_task.assert_not_called()
         call_kwargs = client.chat_postMessage.call_args.kwargs
         assert "태스크" in call_kwargs["text"]
+
+
+def _trader_projects():
+    from slack_bot.config import ProjectConfig
+
+    return {
+        "trader": ProjectConfig(
+            name="trader", path="/tmp/trader", description="트레이더"
+        ),
+    }
+
+
+def _command_event(ts: str = "1000.0"):
+    return {
+        "text": "<@U0BOT> trader 하네스 TRD-128 돌려줘",
+        "ts": ts,
+        "user": "U1",
+        "channel": "C123",
+        "channel_type": "channel",
+    }
+
+
+def _say_text(say: AsyncMock) -> str:
+    return " ".join(
+        str(c.args[0]) if c.args else str(c.kwargs.get("text", ""))
+        for c in say.await_args_list
+    )
+
+
+class TestEventDedup:
+    """Slack 이벤트 재전송 중복 차단 — 같은 event_ts는 한 번만 처리한다.
+
+    회귀 방지: 중복 차단이 없으면 재전송된 멘션마다 claude -p 하네스가 겹쳐
+    실행돼 토큰을 배수로 소모했다 (TRD-128 사고).
+    """
+
+    @pytest.mark.asyncio
+    async def test_same_event_ts_processed_once(self):
+        events, task_manager = _register_event_handlers(_trader_projects())
+        handler = events["app_mention"]
+
+        say = AsyncMock()
+        client = MagicMock()
+        client.reactions_add = AsyncMock()
+        client.reactions_remove = AsyncMock()
+        client.chat_postMessage = AsyncMock()
+
+        event = _command_event("1000.0")
+
+        with patch(
+            "slack_bot.handlers.run_claude",
+            new_callable=AsyncMock,
+            return_value=MagicMock(success=True, output="done"),
+        ):
+            await handler(event=event, say=say, client=client)
+            await handler(event=event, say=say, client=client)  # 재전송
+            await _drain_background_tasks()
+
+        # 태스크 생성은 첫 이벤트에서만
+        assert task_manager.create_task.await_count == 1
+        # 재전송은 리액션조차 추가하지 않고 즉시 반환
+        assert client.reactions_add.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_distinct_event_ts_both_processed(self):
+        """서로 다른 event_ts(= 다른 메시지)는 둘 다 처리된다."""
+        events, task_manager = _register_event_handlers(_trader_projects())
+        handler = events["app_mention"]
+
+        say = AsyncMock()
+        client = MagicMock()
+        client.reactions_add = AsyncMock()
+        client.reactions_remove = AsyncMock()
+        client.chat_postMessage = AsyncMock()
+
+        with patch(
+            "slack_bot.handlers.run_claude",
+            new_callable=AsyncMock,
+            return_value=MagicMock(success=True, output="done"),
+        ):
+            await handler(event=_command_event("1000.0"), say=say, client=client)
+            await handler(event=_command_event("2000.0"), say=say, client=client)
+            await _drain_background_tasks()
+
+        assert task_manager.create_task.await_count == 2
+
+
+class TestDuplicateRunningGuard:
+    """동일 작업이 이미 실행 중이면 재실행을 건너뛴다 (중복 토큰 소모 방지)."""
+
+    @pytest.mark.asyncio
+    async def test_command_skipped_when_duplicate_running(self):
+        events, task_manager = _register_event_handlers(_trader_projects())
+
+        existing = MagicMock()
+        existing.task_id = "007"
+        task_manager.find_running_duplicate.return_value = existing
+
+        handler = events["app_mention"]
+        say = AsyncMock()
+        client = MagicMock()
+        client.reactions_add = AsyncMock()
+        client.reactions_remove = AsyncMock()
+        client.chat_postMessage = AsyncMock()
+
+        with patch(
+            "slack_bot.handlers.run_claude", new_callable=AsyncMock
+        ) as mock_run:
+            await handler(event=_command_event("3000.0"), say=say, client=client)
+            await _drain_background_tasks()
+
+        # 새 태스크를 만들지도, claude -p를 돌리지도 않는다
+        task_manager.create_task.assert_not_awaited()
+        mock_run.assert_not_awaited()
+        # 사용자에게 중복 안내(기존 태스크 ID 포함)
+        msg = _say_text(say)
+        assert "이미" in msg and "007" in msg
+
+    @pytest.mark.asyncio
+    async def test_command_runs_when_no_duplicate(self):
+        """중복이 없으면 정상적으로 태스크를 생성한다 (가드가 정상 실행을 막지 않음)."""
+        events, task_manager = _register_event_handlers(_trader_projects())
+        task_manager.find_running_duplicate.return_value = None
+
+        handler = events["app_mention"]
+        say = AsyncMock()
+        client = MagicMock()
+        client.reactions_add = AsyncMock()
+        client.reactions_remove = AsyncMock()
+        client.chat_postMessage = AsyncMock()
+
+        with patch(
+            "slack_bot.handlers.run_claude",
+            new_callable=AsyncMock,
+            return_value=MagicMock(success=True, output="done"),
+        ):
+            await handler(event=_command_event("4000.0"), say=say, client=client)
+            await _drain_background_tasks()
+
+        task_manager.create_task.assert_awaited_once()
