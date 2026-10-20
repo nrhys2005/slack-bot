@@ -26,6 +26,11 @@ logger = logging.getLogger(__name__)
 MAX_CONCURRENT_CHAT = 3
 MAX_CONCURRENT_TASK = 3
 
+# Slack 이벤트 재전송(ack 지연/네트워크)으로 같은 메시지가 중복 도착할 때,
+# 이미 처리한 event_ts를 기억해 두는 윈도우(초). Slack은 미응답 이벤트를
+# 최대 ~5분간 재전송하므로 그보다 넉넉히 잡는다.
+EVENT_DEDUP_TTL = 600.0
+
 # `claude auth login`이 인증 URL을 출력한 뒤 stdin으로 입력받는 코드를
 # Slack 메시지로 이어 받기 위해 사용하는 세션 상태.
 @dataclass
@@ -58,6 +63,29 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
     _pending_auth_sessions: dict[str, AuthSession] = {}
     # 테스트가 진행 중인 세션에 접근할 수 있도록 app에 노출 (production no-op).
     app._pending_auth_sessions = _pending_auth_sessions
+
+    # 이미 처리한 Slack event_ts 기록(값 = 최초 처리 시각). Slack이 같은
+    # 이벤트를 재전송해도 claude -p를 중복 실행하지 않도록 차단한다.
+    _recent_event_ts: dict[str, float] = {}
+
+    def _is_duplicate_event(event_ts: str) -> bool:
+        """이미 처리한 event_ts면 True. 처음 보는 ts는 기록하고 False.
+
+        event_ts 기록은 동기 연산이라 await 이전에 완료되므로, 동시에 도착한
+        재전송 이벤트도 첫 번째만 통과하고 나머지는 차단된다.
+        """
+        if not event_ts:
+            return False
+        now = time.time()
+        # TTL 지난 항목 정리 (무한 증가 방지)
+        for stale in [
+            ts for ts, seen in _recent_event_ts.items() if now - seen > EVENT_DEDUP_TTL
+        ]:
+            del _recent_event_ts[stale]
+        if event_ts in _recent_event_ts:
+            return True
+        _recent_event_ts[event_ts] = now
+        return False
 
     def _find_auth_session_for_message(
         channel: str,
@@ -104,6 +132,14 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
     ) -> None:
         """@멘션과 DM 공통 메시지 처리 흐름."""
         files = files or []
+
+        # Slack 이벤트 재전송 중복 차단. 리액션/첨부 다운로드/claude -p 실행
+        # 어느 것도 중복으로 일어나지 않도록 가장 먼저 걸러낸다. 재전송은 같은
+        # event_ts를 그대로 들고 오므로 이 한 줄로 흡수된다.
+        if _is_duplicate_event(event_ts):
+            logger.info("중복 이벤트 무시 (재전송 추정): event_ts=%s", event_ts)
+            return
+
         if not question and not files:
             await say(
                 "무엇을 도와드릴까요? 프로젝트 명령 실행, 상태 확인, 질문 등을 할 수 있습니다.",
@@ -371,6 +407,21 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
 
         prompt_display = f"/{intent.command} {intent.args}".strip()
 
+        # 동일 작업이 이미 실행 중이면 재실행하지 않는다. 같은 멘션이 중복
+        # 전달되거나 사용자가 조급해 재전송해도 claude -p 파이프라인이 겹쳐
+        # 돌며 토큰을 배수로 태우는 사고를 막는다.
+        existing = task_manager.find_running_duplicate(
+            intent.project, intent.command, intent.args
+        )
+        if existing is not None:
+            await say(
+                f":warning: *{intent.project}* `{prompt_display}` 은(는) 이미 "
+                f"실행 중입니다 (태스크 ID: {existing.task_id}). 중복 실행을 "
+                f"건너뜁니다. 중단하려면 `/stop {existing.task_id}`.",
+                thread_ts=thread_ts,
+            )
+            return False
+
         # 태스크 생성 및 백그라운드 실행
         task_manager.cleanup_old()
         task = await task_manager.create_task(
@@ -430,6 +481,19 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
 
         prompt = intent.args or intent.raw_text
         prompt_display = prompt if len(prompt) <= 80 else prompt[:80] + "…"
+
+        # 동일 자유 문장이 이미 실행 중이면 재실행하지 않는다 (중복 토큰 소모 방지).
+        existing = task_manager.find_running_duplicate(
+            intent.project, "prompt", prompt
+        )
+        if existing is not None:
+            await say(
+                f":warning: *{intent.project}* 동일 요청이 이미 실행 중입니다 "
+                f"(태스크 ID: {existing.task_id}). 중복 실행을 건너뜁니다. "
+                f"중단하려면 `/stop {existing.task_id}`.",
+                thread_ts=thread_ts,
+            )
+            return False
 
         task_manager.cleanup_old()
         task = await task_manager.create_task(

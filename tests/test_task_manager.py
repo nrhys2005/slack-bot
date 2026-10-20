@@ -92,3 +92,31 @@ async def test_cleanup_old(tm: TaskManager):
 
     tm.cleanup_old(max_age=1800)
     assert tm.get_task(task.task_id) is None
+
+
+@pytest.mark.asyncio
+async def test_find_running_duplicate_matches_running(tm: TaskManager):
+    """동일 (project, command, args)로 실행 중인 태스크를 찾아 반환한다."""
+    task = await tm.create_task("trader", "harness", "TRD-128", "u", "ch")
+
+    found = tm.find_running_duplicate("trader", "harness", "TRD-128")
+    assert found is task
+
+
+@pytest.mark.asyncio
+async def test_find_running_duplicate_ignores_non_running(tm: TaskManager):
+    """완료/중단된 태스크는 중복으로 보지 않는다 (재실행 허용)."""
+    task = await tm.create_task("trader", "harness", "TRD-128", "u", "ch")
+    tm.complete_task(task.task_id, True)
+
+    assert tm.find_running_duplicate("trader", "harness", "TRD-128") is None
+
+
+@pytest.mark.asyncio
+async def test_find_running_duplicate_distinguishes_args(tm: TaskManager):
+    """project/command가 같아도 args가 다르면 별개 작업으로 본다."""
+    await tm.create_task("trader", "harness", "TRD-128", "u", "ch")
+
+    assert tm.find_running_duplicate("trader", "harness", "TRD-999") is None
+    assert tm.find_running_duplicate("trader", "review", "TRD-128") is None
+    assert tm.find_running_duplicate("alert-cow", "harness", "TRD-128") is None
