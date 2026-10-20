@@ -120,3 +120,62 @@ async def test_find_running_duplicate_distinguishes_args(tm: TaskManager):
     assert tm.find_running_duplicate("trader", "harness", "TRD-999") is None
     assert tm.find_running_duplicate("trader", "review", "TRD-128") is None
     assert tm.find_running_duplicate("alert-cow", "harness", "TRD-128") is None
+
+
+@pytest.mark.asyncio
+async def test_create_task_if_absent_creates_when_empty(tm: TaskManager):
+    """중복이 없으면 새 태스크를 생성하고 created=True를 반환한다."""
+    task, created = await tm.create_task_if_absent(
+        "trader", "harness", "TRD-128", "u", "ch"
+    )
+    assert created is True
+    assert task.task_id == "001"
+    assert tm.get_task("001") is task
+
+
+@pytest.mark.asyncio
+async def test_create_task_if_absent_skips_when_duplicate(tm: TaskManager):
+    """동일 running 태스크가 있으면 기존 태스크를 created=False로 반환한다."""
+    first, created1 = await tm.create_task_if_absent(
+        "trader", "harness", "TRD-128", "u", "ch"
+    )
+    second, created2 = await tm.create_task_if_absent(
+        "trader", "harness", "TRD-128", "u", "ch"
+    )
+    assert created1 is True
+    assert created2 is False
+    assert second is first
+    assert len(tm.get_running_tasks()) == 1
+
+
+@pytest.mark.asyncio
+async def test_create_task_if_absent_allows_rerun_after_completion(tm: TaskManager):
+    """완료된 태스크는 중복이 아니므로 동일 키 재실행을 허용한다."""
+    first, created1 = await tm.create_task_if_absent(
+        "trader", "harness", "TRD-128", "u", "ch"
+    )
+    tm.complete_task(first.task_id, True)
+
+    second, created2 = await tm.create_task_if_absent(
+        "trader", "harness", "TRD-128", "u", "ch"
+    )
+    assert created2 is True
+    assert second is not first
+
+
+@pytest.mark.asyncio
+async def test_create_task_if_absent_concurrent_single_create(tm: TaskManager):
+    """동일 키로 동시 호출해도 정확히 1개만 생성된다 (find→create 레이스 원자화)."""
+    results = await asyncio.gather(
+        *[
+            tm.create_task_if_absent("trader", "harness", "TRD-128", "u", "ch")
+            for _ in range(20)
+        ]
+    )
+    created_flags = [created for _, created in results]
+    assert created_flags.count(True) == 1
+
+    created_task = next(task for task, created in results if created)
+    # 모든 호출이 동일 태스크 인스턴스를 받는다
+    assert all(task is created_task for task, _ in results)
+    assert len(tm.get_running_tasks()) == 1
