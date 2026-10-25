@@ -16,6 +16,7 @@ from slack_bot.db_query import (
     build_sqlite_db_instructions,
 )
 from slack_bot.intent import DB_KEYWORDS
+from slack_bot.remote import build_remote_instructions
 from slack_bot.security import make_safe_env
 from slack_bot.task_manager import TaskInfo
 
@@ -136,6 +137,8 @@ def _build_system_prompt(
         status_section = f"- 대상 프로젝트({target_project.name})의 주요 경로: {paths}\n"
     elif target_project:
         status_section = f"- 대상 프로젝트({target_project.name}) 경로: `{target_project.path}`\n"
+    if target_project and target_project.remote:
+        status_section += build_remote_instructions(target_project)
 
     # DB 섹션
     db_section = ""

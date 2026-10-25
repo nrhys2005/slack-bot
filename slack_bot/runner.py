@@ -5,6 +5,7 @@ import logging
 from dataclasses import dataclass
 
 from slack_bot.config import ProjectConfig
+from slack_bot.remote import build_remote_instructions
 from slack_bot.security import make_safe_env
 from slack_bot.task_manager import TaskInfo
 
@@ -64,6 +65,9 @@ async def _run_prompt(
         "--permission-mode",
         "bypassPermissions",
     ]
+    remote_instructions = build_remote_instructions(project)
+    if remote_instructions:
+        cmd.extend(["--append-system-prompt", remote_instructions])
 
     proc = await asyncio.create_subprocess_exec(
         *cmd,
