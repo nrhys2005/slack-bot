@@ -17,17 +17,27 @@ def ssh_base_args(remote: RemoteConfig) -> list[str]:
     """비밀번호 프롬프트 없이 실패하도록 BatchMode 를 건 ssh 기본 인자."""
     return [
         "ssh",
+        "-n",  # 봇의 stdin 을 원격 명령에 넘기지 않는다
         "-o", "BatchMode=yes",
         "-o", f"ConnectTimeout={SSH_CONNECT_TIMEOUT}",
         remote.host,
     ]
 
 
+def _quote_remote_path(path: str) -> str:
+    """원격 경로를 인용한다. 앞의 `~/` 는 인용하면 풀리지 않으므로 "$HOME" 으로 바꾼다."""
+    if path == "~":
+        return '"$HOME"'
+    if path.startswith("~/"):
+        return '"$HOME"/' + shlex.quote(path[2:])
+    return shlex.quote(path)
+
+
 def build_remote_shell_args(remote: RemoteConfig, command: str) -> list[str]:
     """원격 서버의 프로젝트 경로에서 command 를 실행하는 ssh argv 를 만든다."""
     script = f'export PATH="{_REMOTE_PATH_PREFIX}:$PATH"; '
     if remote.path:
-        script += f"cd {shlex.quote(remote.path)} && "
+        script += f"cd {_quote_remote_path(remote.path)} && "
     script += command
     return [*ssh_base_args(remote), script]
 

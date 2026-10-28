@@ -44,6 +44,10 @@ def test_load_projects_parses_remote(tmp_path):
         "      notes: launchd\n"
         "  local:\n"
         "    path: /tmp/local\n"
+        "  dash-host:\n"
+        "    path: /tmp/d\n"
+        "    remote:\n"
+        "      host: -oProxyCommand=evil\n"
         "  no-host:\n"
         "    path: /tmp/x\n"
         "    remote:\n"
@@ -55,6 +59,8 @@ def test_load_projects_parses_remote(tmp_path):
     assert app_config.projects["local"].remote is None
     # host 가 없으면 원격 설정을 무시한다
     assert app_config.projects["no-host"].remote is None
+    # "-" 로 시작하는 host 는 ssh 옵션 주입이 되므로 거부한다
+    assert app_config.projects["dash-host"].remote is None
 
 
 # ---------------------------------------------------------------------------
@@ -64,10 +70,10 @@ def test_load_projects_parses_remote(tmp_path):
 
 def test_build_remote_shell_args_quotes_path(tmp_path):
     args = build_remote_shell_args(_remote_project(tmp_path).remote, "launchctl list | grep alertcow")
-    assert args[:6] == [
-        "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "cow-server",
+    assert args[:7] == [
+        "ssh", "-n", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "cow-server",
     ]
-    script = args[6]
+    script = args[7]
     assert "cd '/Users/me/alert cow' && launchctl list | grep alertcow" in script
     assert script.startswith('export PATH="/opt/homebrew/bin:')
 
@@ -78,6 +84,11 @@ def test_build_remote_shell_args_without_path():
     assert args[-1].endswith("uptime")
 
 
+def test_build_remote_shell_args_expands_home_path():
+    args = build_remote_shell_args(RemoteConfig(host="h", path="~/my svc"), "ls")
+    assert "cd \"$HOME\"/'my svc' && ls" in args[-1]
+
+
 def test_remote_instructions_empty_for_local_project(tmp_path):
     assert build_remote_instructions(ProjectConfig(name="x", path=str(tmp_path))) == ""
 
@@ -85,7 +96,7 @@ def test_remote_instructions_empty_for_local_project(tmp_path):
 def test_system_prompt_includes_remote_section(tmp_path):
     prompt = _build_system_prompt(target_project=_remote_project(tmp_path))
     assert "원격 운영 서버 (cow)" in prompt
-    assert "ssh -o BatchMode=yes -o ConnectTimeout=10 cow-server" in prompt
+    assert "ssh -n -o BatchMode=yes -o ConnectTimeout=10 cow-server" in prompt
     assert "launchd com.alertcow.*" in prompt
 
 
