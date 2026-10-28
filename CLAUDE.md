@@ -38,6 +38,7 @@ slack_bot/
 ├── chat.py            # Claude CLI로 태스크 출력 분석, 프로젝트 상태 파악, 질문 답변
 ├── db_query.py        # DB 프로젝트 모델 기반 자연어→SQL→psql 실행
 ├── task_manager.py    # TaskInfo/TaskManager — 실행 중 태스크 추적, 출력 누적
+├── remote.py          # remote 설정 프로젝트의 ssh 명령 조립, claude -p 용 원격 서버 안내문
 ├── attachments.py     # Slack 첨부파일(이미지/표/문서) 다운로드 → claude -p가 Read 할 프롬프트 노트 생성
 └── security.py        # 서브프로세스 env 생성, 출력 마스킹, 인증, rate limit, 감사 로깅
 tests/                 # pytest 테스트 (인텐트 라우팅, 태스크 매니저, 핸들러/서브프로세스 안정성, 인증 로그인)
@@ -125,7 +126,11 @@ pyproject.toml         # 의존성 및 스크립트 정의
 - `DBConfig(db_type, env_file, env_prefix, model_paths, db_path)` — 프로젝트별 DB 접속 설정
   - `db_type`: "postgresql" (기본) 또는 "sqlite"
   - `db_path`: SQLite DB 파일 경로 (프로젝트 루트 기준 상대경로)
-- `ProjectConfig(name, path, commands, description, db, mcp_tools, status_paths)` — 프로젝트 설정
+- `ProjectConfig(name, path, commands, description, db, mcp_tools, status_paths, remote)` — 프로젝트 설정
+- `RemoteConfig(host, path, notes)` — SSH 로 관리하는 원격 운영 서버. `remote.host` 가 있을 때만 활성화
+  - shell_exec: `ssh -o BatchMode=yes <host> 'cd <path> && <명령>'` 으로 원격 실행 (PATH 에 `/opt/homebrew/bin` 등 보충)
+  - question/status, project_prompt, command: 원격 접근 안내를 시스템 프롬프트에 붙인다 (`chat._build_system_prompt`, `runner._run_prompt` 의 `--append-system-prompt`)
+  - BatchMode 라 키 인증이 안 되면 비밀번호를 묻지 않고 바로 실패한다. `/stop` 은 로컬 ssh 만 끊으므로 원격에서 이미 시작된 프로세스는 남을 수 있다
 - `load_projects()`: `projects.yaml` 읽어서 `AppConfig(projects, security)` 반환
 - 하위호환: `db_backend: true` → `DBConfig` 자동 변환, `mcp_tools` 미설정 시 기본 MCP 제공
 - 프로젝트별 capabilities:

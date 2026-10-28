@@ -17,6 +17,7 @@ from slack_bot.chat import answer_question
 from slack_bot.config import ProjectConfig, load_projects
 from slack_bot.db_query import run_db_query, run_db_query_export
 from slack_bot.intent import _TASK_ID_RE, Intent, parse_intent
+from slack_bot.remote import build_remote_shell_args
 from slack_bot.runner import run_claude, run_free_prompt
 from slack_bot.security import check_auth, make_safe_env, redact_output
 from slack_bot.task_manager import TaskManager
@@ -585,12 +586,17 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
             return False
 
         log_path = f"/tmp/slackbot_shell_{int(time.time())}.log"
+        where_line = (
+            f"*   실행 위치: 원격 `{project.remote.host}` (ssh)\n"
+            if project.remote else ""
+        )
 
         # 시작 메시지를 먼저 전송 (백그라운드 태스크보다 먼저)
         await say(
             f":rocket: 명령어 실행을 시작합니다.\n"
             f"*   태스크 ID: {task.task_id}\n"
             f"*   프로젝트: {intent.project}\n"
+            f"{where_line}"
             f"*   명령어: `{intent.command}`\n"
             f"*   로그: `{log_path}`\n\n"
             f"나중에 결과 확인하실 때 말씀해주세요.",
@@ -1520,13 +1526,23 @@ async def _run_shell_and_report(
                         current_path = f"{p}:{current_path}"
                 env["PATH"] = current_path
 
-                proc = await asyncio.create_subprocess_shell(
-                    task.args,
-                    cwd=project.path,
-                    stdout=log_file,
-                    stderr=asyncio.subprocess.STDOUT,
-                    env=env,
-                )
+                if project.remote:
+                    # 원격 운영 서버가 설정된 프로젝트는 ssh 로 원격에서 실행
+                    proc = await asyncio.create_subprocess_exec(
+                        *build_remote_shell_args(project.remote, task.args),
+                        cwd=project.path,
+                        stdout=log_file,
+                        stderr=asyncio.subprocess.STDOUT,
+                        env=env,
+                    )
+                else:
+                    proc = await asyncio.create_subprocess_shell(
+                        task.args,
+                        cwd=project.path,
+                        stdout=log_file,
+                        stderr=asyncio.subprocess.STDOUT,
+                        env=env,
+                    )
                 task.process = proc
                 await proc.wait()
 

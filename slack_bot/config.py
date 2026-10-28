@@ -23,6 +23,15 @@ class DBConfig:
 
 
 @dataclass
+class RemoteConfig:
+    """SSH로 관리하는 원격 운영 서버 설정."""
+
+    host: str  # ~/.ssh/config 별칭 또는 user@host
+    path: str = ""  # 원격 서버의 프로젝트 경로. 비면 원격 홈 디렉토리
+    notes: str = ""  # 서비스 이름, 로그 위치 등 claude 에게 알려 줄 운영 메모
+
+
+@dataclass
 class ProjectConfig:
     name: str
     path: str
@@ -31,6 +40,7 @@ class ProjectConfig:
     db: DBConfig | None = None
     mcp_tools: list[str] = field(default_factory=list)
     status_paths: list[str] = field(default_factory=list)
+    remote: RemoteConfig | None = None
 
 
 @dataclass
@@ -87,6 +97,18 @@ def load_projects(config_path: str | None = None) -> AppConfig:
         if not mcp_tools and cfg.get("commands", []):
             mcp_tools = list(_DEFAULT_MCP_TOOLS)
 
+        # 원격 운영 서버: host 가 있을 때만 활성화
+        remote_config: RemoteConfig | None = None
+        remote_raw = cfg.get("remote")
+        remote_host = str(remote_raw.get("host") or "") if isinstance(remote_raw, dict) else ""
+        # "-" 로 시작하는 host 는 ssh 옵션으로 해석되므로 받지 않는다
+        if remote_host and not remote_host.startswith("-"):
+            remote_config = RemoteConfig(
+                host=remote_host,
+                path=remote_raw.get("path", ""),
+                notes=remote_raw.get("notes", ""),
+            )
+
         projects[name] = ProjectConfig(
             name=name,
             path=cfg["path"],
@@ -95,6 +117,7 @@ def load_projects(config_path: str | None = None) -> AppConfig:
             db=db_config,
             mcp_tools=mcp_tools,
             status_paths=cfg.get("status_paths", []),
+            remote=remote_config,
         )
 
     security_raw = raw.get("security", {})
