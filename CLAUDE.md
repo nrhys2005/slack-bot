@@ -33,6 +33,7 @@ slack_bot/
 ├── main.py            # 엔트리포인트. AsyncApp, TaskManager 생성, Socket Mode 시작
 ├── config.py          # ProjectConfig/DBConfig 데이터클래스, projects.yaml 로드
 ├── intent.py          # 자연어 인텐트 파싱 (command, status, question, task_control, db_query, project_prompt)
+├── intent_router.py   # route_intent() — 슬래시/관리 명령은 규칙으로, 나머지 자연어는 haiku 로 프로젝트와 action 판단. 실패하면 question 으로 낮춤
 ├── runner.py          # run_claude() — claude -p 비동기 서브프로세스 실행 (스트리밍)
 ├── handlers.py        # @멘션, DM 통합 메시지 핸들러 (즉시 실행 + 백그라운드)
 ├── chat.py            # Claude CLI로 태스크 출력 분석, 프로젝트 상태 파악, 질문 답변
