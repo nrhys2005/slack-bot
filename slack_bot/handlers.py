@@ -32,6 +32,40 @@ MAX_CONCURRENT_TASK = 3
 # 최대 ~5분간 재전송하므로 그보다 넉넉히 잡는다.
 EVENT_DEDUP_TTL = 600.0
 
+# Slack section 블록의 text 는 3000자를 넘으면 invalid_blocks 로 거부된다.
+# 코드펜스("```\n" + "\n```") 8자를 빼고 여유를 둔 블록당 본문 길이.
+SECTION_TEXT_CHUNK = 2900
+
+
+def _output_blocks(output: str) -> list[dict]:
+    """실행 출력을 3000자 제한 안의 코드블록 section 블록 목록으로 나눈다.
+
+    runner 의 출력 상한(3900자)이 section 한도보다 커서, 블록 하나에 담으면
+    chat.postMessage 가 invalid_blocks 로 실패하고 결과 대신 에러 안내만 나갔다.
+    """
+    if not output:
+        return [{"type": "section", "text": {"type": "mrkdwn", "text": "_출력 없음_"}}]
+
+    chunks: list[str] = []
+    rest = output
+    while rest:
+        if len(rest) <= SECTION_TEXT_CHUNK:
+            chunks.append(rest)
+            break
+        # 가능하면 줄바꿈에서 자르고, 긴 한 줄이면 길이로 자른다.
+        cut = rest.rfind("\n", 0, SECTION_TEXT_CHUNK)
+        if cut <= 0:
+            chunks.append(rest[:SECTION_TEXT_CHUNK])
+            rest = rest[SECTION_TEXT_CHUNK:]
+        else:
+            chunks.append(rest[:cut])
+            rest = rest[cut + 1:]
+
+    return [
+        {"type": "section", "text": {"type": "mrkdwn", "text": f"```\n{chunk}\n```"}}
+        for chunk in chunks
+    ]
+
 # `claude auth login`이 인증 URL을 출력한 뒤 stdin으로 입력받는 코드를
 # Slack 메시지로 이어 받기 위해 사용하는 세션 상태.
 @dataclass
@@ -1627,13 +1661,7 @@ async def _run_and_report(
                     ),
                 },
             },
-            {
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": f"```\n{output}\n```" if output else "_출력 없음_",
-                },
-            },
+            *_output_blocks(output),
         ]
 
         msg_kwargs: dict = dict(
@@ -1711,13 +1739,7 @@ async def _run_prompt_and_report(
                     ),
                 },
             },
-            {
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": f"```\n{output}\n```" if output else "_출력 없음_",
-                },
-            },
+            *_output_blocks(output),
         ]
 
         msg_kwargs: dict = dict(

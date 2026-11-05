@@ -107,7 +107,7 @@ def test_system_prompt_includes_remote_section(tmp_path):
 
 @pytest.mark.asyncio
 async def test_run_free_prompt_appends_remote_system_prompt(tmp_path):
-    from slack_bot.runner import run_free_prompt
+    from slack_bot.runner import RESPONSE_GUIDE, run_free_prompt
 
     proc = MagicMock()
     proc.stdout.__aiter__.return_value = iter([])
@@ -127,6 +127,7 @@ async def test_run_free_prompt_appends_remote_system_prompt(tmp_path):
     cmd = list(mock_exec.call_args.args)
     idx = cmd.index("--append-system-prompt")
     assert "cow-server" in cmd[idx + 1]
+    assert RESPONSE_GUIDE in cmd[idx + 1]
 
 
 @pytest.mark.asyncio
@@ -158,3 +159,55 @@ async def test_shell_exec_runs_over_ssh_for_remote_project(tmp_path):
     argv = list(mock_exec.call_args.args)
     assert argv[0] == "ssh" and "cow-server" in argv
     assert argv[-1].endswith("uptime")
+
+
+@pytest.mark.asyncio
+async def test_run_free_prompt_appends_response_guide_without_remote(tmp_path):
+    from slack_bot.runner import RESPONSE_GUIDE, run_free_prompt
+
+    proc = MagicMock()
+    proc.stdout.__aiter__.return_value = iter([])
+    proc.stderr.read = AsyncMock(return_value=b"")
+    proc.wait = AsyncMock(return_value=0)
+    proc.returncode = 0
+    task = TaskInfo(
+        task_id="002", project_name="local", command="prompt", args="정리",
+        user="U1", channel="C1", start_time=time.time(),
+    )
+    project = ProjectConfig(name="local", path=str(tmp_path))
+    with patch(
+        "slack_bot.runner.asyncio.create_subprocess_exec",
+        new=AsyncMock(return_value=proc),
+    ) as mock_exec:
+        await run_free_prompt(project, "작업 내용 정리해 줘", task)
+
+    cmd = list(mock_exec.call_args.args)
+    assert cmd.count("--append-system-prompt") == 1
+    appended = cmd[cmd.index("--append-system-prompt") + 1]
+    assert appended == RESPONSE_GUIDE
+    assert "3500자" in appended and "근거" in appended
+
+
+def test_chat_system_prompt_requires_summary_and_evidence():
+    prompt = _build_system_prompt()
+    assert "3500자 이내" in prompt
+    assert "근거" in prompt
+
+
+def test_db_system_prompts_require_summary_and_evidence(tmp_path):
+    from slack_bot.config import DBConfig
+    from slack_bot.db_query import _build_sqlite_system_prompt
+    from slack_bot.db_query import _build_system_prompt as build_pg_prompt
+
+    sqlite_project = ProjectConfig(
+        name="local", path=str(tmp_path), db=DBConfig(db_type="sqlite", db_path="a.db"),
+    )
+    pg_envs = {
+        "main": {
+            "read_host": "h", "port": "5432", "username": "u",
+            "db_name": "d", "password": "p",
+        }
+    }
+    for prompt in (_build_sqlite_system_prompt(sqlite_project), build_pg_prompt(pg_envs)):
+        assert "3500자 이내" in prompt
+        assert "근거" in prompt

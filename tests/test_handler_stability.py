@@ -372,6 +372,119 @@ class TestRunPromptAndReport:
         task_manager.complete_task.assert_not_called()
 
 
+def _assert_blocks_within_slack_limit(blocks: list[dict]) -> None:
+    """Slack section 블록 text 는 3000자 이하여야 한다 (넘으면 invalid_blocks)."""
+    for block in blocks:
+        if block.get("type") == "section":
+            assert len(block["text"]["text"]) <= 3000
+
+
+class TestLongOutputBlocks:
+    """긴 출력을 section 블록 하나에 넣어 invalid_blocks 로 실패하던 문제 재현."""
+
+    def test_output_blocks_split_long_output(self):
+        from slack_bot.handlers import _output_blocks
+
+        output = "\n".join(f"{i:04d} " + "가" * 60 for i in range(70))
+        assert len(output) > 3900
+
+        blocks = _output_blocks(output)
+
+        assert len(blocks) >= 2
+        _assert_blocks_within_slack_limit(blocks)
+        # 줄바꿈에서 잘렸으므로 펜스를 벗긴 조각을 줄바꿈으로 이으면 원문과 정확히 같아야 한다
+        joined = "\n".join(
+            b["text"]["text"].removeprefix("```\n").removesuffix("\n```")
+            for b in blocks
+        )
+        assert joined == output
+
+    def test_output_blocks_split_single_long_line(self):
+        from slack_bot.handlers import _output_blocks
+
+        blocks = _output_blocks("x" * 7000)
+
+        _assert_blocks_within_slack_limit(blocks)
+        assert len(blocks) == 3
+
+    def test_output_blocks_empty(self):
+        from slack_bot.handlers import _output_blocks
+
+        blocks = _output_blocks("")
+
+        assert blocks == [
+            {"type": "section", "text": {"type": "mrkdwn", "text": "_출력 없음_"}}
+        ]
+
+    @pytest.mark.asyncio
+    async def test_prompt_report_long_output_within_limit(self):
+        from slack_bot.handlers import _run_prompt_and_report
+
+        app = MagicMock()
+        app.client.chat_postMessage = AsyncMock()
+        app.client.reactions_remove = AsyncMock()
+        task_manager = MagicMock()
+        task = MagicMock()
+        task.task_id = "131"
+        task.status = "running"
+        task.args = "ML 예측 정리"
+        task.thread_ts = "1234.5678"
+        task.channel = "C123"
+
+        run_result = MagicMock()
+        run_result.success = True
+        run_result.output = "가" * 3900 + "\n\n... (truncated)"
+
+        with patch(
+            "slack_bot.handlers.run_free_prompt",
+            new_callable=AsyncMock,
+            return_value=run_result,
+        ):
+            await _run_prompt_and_report(
+                app, task_manager, MagicMock(), task, "ML 예측 정리",
+                asyncio.Semaphore(1),
+            )
+
+        app.client.chat_postMessage.assert_awaited_once()
+        _assert_blocks_within_slack_limit(
+            app.client.chat_postMessage.call_args.kwargs["blocks"]
+        )
+        task_manager.complete_task.assert_called_once_with("131", True)
+
+    @pytest.mark.asyncio
+    async def test_command_report_long_output_within_limit(self):
+        from slack_bot.handlers import _run_and_report
+
+        app = MagicMock()
+        app.client.chat_postMessage = AsyncMock()
+        app.client.reactions_remove = AsyncMock()
+        task = MagicMock()
+        task.task_id = "132"
+        task.command = "harness"
+        task.args = "TRD-1"
+        task.thread_ts = "1234.5678"
+        task.channel = "C123"
+
+        run_result = MagicMock()
+        run_result.success = True
+        run_result.output = "a" * 3900 + "\n\n... (truncated)"
+
+        with patch(
+            "slack_bot.handlers.run_claude",
+            new_callable=AsyncMock,
+            return_value=run_result,
+        ):
+            await _run_and_report(
+                app, MagicMock(), MagicMock(), task, "/harness TRD-1",
+                asyncio.Semaphore(1),
+            )
+
+        app.client.chat_postMessage.assert_awaited_once()
+        _assert_blocks_within_slack_limit(
+            app.client.chat_postMessage.call_args.kwargs["blocks"]
+        )
+
+
 class TestRunDbQueryAndReportSemaphore:
     """_run_db_query_and_report가 semaphore를 사용하는지 확인."""
 
