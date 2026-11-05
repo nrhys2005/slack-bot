@@ -14,6 +14,18 @@ logger = logging.getLogger(__name__)
 MAX_OUTPUT_LENGTH = 3900  # Slack 메시지 제한 (~4000) 여유분 확보
 SUBPROCESS_TIMEOUT = 3600  # 1시간. harness 파이프라인은 오래 걸릴 수 있음
 
+# 최종 답변은 MAX_OUTPUT_LENGTH 에서 잘려 Slack 으로 나가므로, 그 안에 들어가게 요약하고
+# 판단마다 근거를 붙이도록 모든 claude -p 실행에 덧붙인다.
+RESPONSE_GUIDE = (
+    "## Slack 응답 지침\n"
+    "최종 답변은 Slack 메시지로 그대로 전달되고, 3900자를 넘으면 뒷부분이 잘린다.\n"
+    "- 최종 답변은 3500자 이내로 쓴다. 넘을 것 같으면 결론과 사용자가 할 일을 먼저 두고 "
+    "세부 내용은 요약한다. 자세한 내용이 꼭 필요하면 파일로 저장하고 그 경로를 알려 준다.\n"
+    "- 판단과 주장마다 근거를 붙인다: 파일 경로와 줄 번호, 실행한 명령과 그 출력 요지, "
+    "로그 원문 한 줄, PR 이나 커밋 링크.\n"
+    "- 직접 확인한 것과 확인하지 못한 것(추정)을 나눠 적는다.\n"
+)
+
 
 @dataclass
 class RunResult:
@@ -65,9 +77,10 @@ async def _run_prompt(
         "--permission-mode",
         "bypassPermissions",
     ]
-    remote_instructions = build_remote_instructions(project)
-    if remote_instructions:
-        cmd.extend(["--append-system-prompt", remote_instructions])
+    system_append = "\n".join(
+        part for part in (RESPONSE_GUIDE, build_remote_instructions(project)) if part
+    )
+    cmd.extend(["--append-system-prompt", system_append])
 
     proc = await asyncio.create_subprocess_exec(
         *cmd,
