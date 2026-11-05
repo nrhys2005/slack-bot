@@ -19,6 +19,8 @@ class TaskInfo:
     output_lines: list[str] = field(default_factory=list)
     process: asyncio.subprocess.Process | None = None
     complete_time: float | None = None
+    # [취소] 버튼이 달린 시작 알림 메시지의 ts. 완료 시 버튼을 걷거나 메시지를 지울 때 쓴다.
+    progress_ts: str = ""
 
     @property
     def elapsed(self) -> float:

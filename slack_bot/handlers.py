@@ -8,9 +8,11 @@ import re
 import subprocess
 import sys
 import time
+import uuid
 from dataclasses import dataclass
 
 from slack_bolt.async_app import AsyncApp
+from slack_sdk.errors import SlackApiError
 
 from slack_bot.attachments import build_attachment_note, download_slack_files
 from slack_bot.chat import answer_question
@@ -65,6 +67,191 @@ def _output_blocks(output: str) -> list[dict]:
         {"type": "section", "text": {"type": "mrkdwn", "text": f"```\n{chunk}\n```"}}
         for chunk in chunks
     ]
+
+# 봇 프로세스마다 새로 뽑는 값. 태스크 ID 는 재시작하면 001 부터 다시 발급되므로,
+# 재시작 전 메시지의 [취소] 버튼이 무관한 새 태스크를 끊지 않도록 버튼 value 에 싣는다.
+_BOOT_NONCE: str = uuid.uuid4().hex[:8]
+_TASK_CANCEL_ACTION_ID = "task_cancel"
+# Slack section 블록 text 상한
+_SECTION_TEXT_LIMIT = 3000
+
+
+def _build_progress_blocks(text: str, task_id: str) -> list[dict]:
+    """시작 알림 blocks: 진행 문구 section 과 danger 스타일 [취소] 버튼.
+
+    버튼 value 는 "<task_id>:<boot_nonce>" 다. 소유자는 TaskInfo.user 에서 확인한다.
+    """
+    body = text
+    if len(body) > _SECTION_TEXT_LIMIT:
+        body = body[: _SECTION_TEXT_LIMIT - 3] + "..."
+    return [
+        {"type": "section", "text": {"type": "mrkdwn", "text": body}},
+        {
+            "type": "actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "style": "danger",
+                    "text": {"type": "plain_text", "text": "취소", "emoji": True},
+                    "action_id": _TASK_CANCEL_ACTION_ID,
+                    "value": f"{task_id}:{_BOOT_NONCE}",
+                }
+            ],
+        },
+    ]
+
+
+def _response_ts(resp) -> str:
+    """Slack 응답에서 ts 를 꺼낸다. dict 형태가 아니거나 값이 없으면 빈 문자열.
+
+    AsyncSlackResponse 는 본문을 .data 에 dict 로 갖고 있다.
+    """
+    data = getattr(resp, "data", resp)
+    if not isinstance(data, dict):
+        return ""
+    ts = data.get("ts")
+    return ts if isinstance(ts, str) else ""
+
+
+async def _post_progress(say, text: str, task_id: str, thread_ts: str):
+    """[취소] 버튼이 달린 시작 알림을 게시하고 응답을 돌려준다.
+
+    blocks 가 거부되면(invalid_blocks 등) 버튼 없이 평문으로 다시 보낸다.
+    평문에도 `/stop ID` 안내가 들어 있어 취소 수단은 남는다.
+    """
+    try:
+        return await say(
+            text=text,
+            blocks=_build_progress_blocks(text, task_id),
+            thread_ts=thread_ts,
+        )
+    except SlackApiError:
+        logger.warning("시작 알림 blocks 게시 실패, 평문으로 재전송", exc_info=True)
+        return await say(text=text, thread_ts=thread_ts)
+
+
+async def _clear_progress_buttons(client, channel: str, ts: str, text: str) -> None:
+    """메시지의 버튼을 걷는다 (best-effort). blocks=[] 에는 항상 text 를 함께 준다."""
+    if not ts:
+        return
+    try:
+        await client.chat_update(channel=channel, ts=ts, text=text, blocks=[])
+    except Exception:
+        logger.warning("진행 메시지 버튼 제거 실패 (ts=%s)", ts, exc_info=True)
+
+
+async def _delete_progress_message(client, channel: str, ts: str) -> None:
+    """시작 알림 메시지를 지운다 (best-effort)."""
+    if not ts:
+        return
+    try:
+        await client.chat_delete(channel=channel, ts=ts)
+    except Exception:
+        logger.warning("진행 메시지 삭제 실패 (ts=%s)", ts, exc_info=True)
+
+
+def _task_progress_ts(task) -> str:
+    ts = getattr(task, "progress_ts", "")
+    return ts if isinstance(ts, str) else ""
+
+
+async def _finish_progress_buttons(app: AsyncApp, task, progress_text: str) -> None:
+    """명령, 프롬프트, shell 완료 시 시작 알림의 버튼만 걷는다.
+
+    취소된 태스크는 버튼 콜백이 이미 "취소 요청됨" 문구로 바꿔 두었으므로 건드리지 않는다.
+    """
+    if task.status == "stopped" or not progress_text:
+        return
+    await _clear_progress_buttons(
+        app.client, task.channel, _task_progress_ts(task), progress_text
+    )
+
+
+async def _ephemeral(client, channel: str, user: str, text: str, thread_ts=None) -> None:
+    kwargs: dict = dict(channel=channel, user=user, text=text)
+    if thread_ts:
+        kwargs["thread_ts"] = thread_ts
+    try:
+        await client.chat_postEphemeral(**kwargs)
+    except Exception:
+        logger.warning("ephemeral 메시지 전송 실패", exc_info=True)
+
+
+async def _handle_task_cancel(*, client, body: dict, task_manager: TaskManager) -> None:
+    """시작 알림 [취소] 버튼 콜백. value = "<task_id>:<boot_nonce>".
+
+    검사 순서는 nonce, 태스크 존재와 채널, 요청자 본인, stop_task 다.
+    요청자 검사를 status 검사보다 앞에 둬 남의 태스크가 끝났는지 여부를 알려주지 않는다.
+    최종 취소 답글과 진행 메시지 정리는 각 _run_*_and_report 의 stopped 분기가 맡는다.
+    """
+    try:
+        action = body["actions"][0]
+        raw_value = (action.get("value") or "").strip()
+        task_id, _, nonce = raw_value.partition(":")
+        clicker_id = body.get("user", {}).get("id", "")
+        message = body["message"]
+        message_ts = message["ts"]
+        message_text = message.get("text", "") or ""
+        thread_ts = message.get("thread_ts")
+        channel_id = body["channel"]["id"]
+    except (KeyError, IndexError, TypeError, AttributeError):
+        logger.warning("task_cancel 콜백 payload 파싱 실패: %r", body)
+        return
+    if not task_id:
+        logger.warning("task_cancel 콜백 value 가 비어 있음: %r", body)
+        return
+
+    if nonce != _BOOT_NONCE:
+        await _ephemeral(
+            client,
+            channel_id,
+            clicker_id,
+            ":information_source: 봇이 재시작되어 만료된 버튼입니다.",
+            thread_ts,
+        )
+        await _clear_progress_buttons(client, channel_id, message_ts, message_text)
+        return
+
+    task = task_manager.get_task(task_id)
+    if task is None or task.channel != channel_id:
+        await _ephemeral(
+            client,
+            channel_id,
+            clicker_id,
+            f":information_source: 작업을 찾을 수 없습니다. (ID: {task_id})",
+            thread_ts,
+        )
+        if task is None:
+            await _clear_progress_buttons(client, channel_id, message_ts, message_text)
+        return
+
+    if task.user != clicker_id:
+        await _ephemeral(
+            client,
+            channel_id,
+            clicker_id,
+            ":lock: 본인이 요청한 작업만 취소할 수 있습니다.",
+            thread_ts,
+        )
+        return
+
+    if not task_manager.stop_task(task_id):
+        await _ephemeral(
+            client,
+            channel_id,
+            clicker_id,
+            f":information_source: 이미 종료된 작업입니다. (ID: {task_id})",
+            thread_ts,
+        )
+        return
+
+    await _clear_progress_buttons(
+        client,
+        channel_id,
+        message_ts,
+        f":octagonal_sign: 취소 요청됨 (ID: {task_id}), 정리 중입니다.",
+    )
+
 
 # `claude auth login`이 인증 URL을 출력한 뒤 stdin으로 입력받는 코드를
 # Slack 메시지로 이어 받기 위해 사용하는 세션 상태.
@@ -279,6 +466,7 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
                 delegated = await _handle_question_intent(
                     intent,
                     question,
+                    user_id,
                     channel,
                     thread_ts,
                     event_ts,
@@ -464,6 +652,10 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
             )
             return False
 
+        progress_text = (
+            f":rocket: *{intent.project}* `{prompt_display}` 실행을 시작합니다. "
+            f"(태스크 ID: {task.task_id}, 취소: `/stop {task.task_id}`)"
+        )
         bg_task = asyncio.create_task(
             _run_and_report(
                 app,
@@ -473,17 +665,15 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
                 prompt_display,
                 _task_semaphore,
                 event_ts=event_ts,
+                progress_text=progress_text,
             )
         )
         _background_tasks.add(bg_task)
         bg_task.add_done_callback(_background_tasks.discard)
         bg_task.add_done_callback(_log_task_exception)
 
-        await say(
-            f":rocket: *{intent.project}* `{prompt_display}` 실행을 시작합니다. "
-            f"(태스크 ID: {task.task_id})",
-            thread_ts=thread_ts,
-        )
+        resp = await _post_progress(say, progress_text, task.task_id, thread_ts)
+        task.progress_ts = _response_ts(resp)
         return True
 
     async def _handle_project_prompt_intent(
@@ -533,6 +723,11 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
             )
             return False
 
+        progress_text = (
+            f":rocket: *{intent.project}* 프롬프트 실행을 시작합니다. "
+            f"(태스크 ID: {task.task_id}, 취소: `/stop {task.task_id}`)\n"
+            f"> {prompt_display}"
+        )
         bg_task = asyncio.create_task(
             _run_prompt_and_report(
                 app,
@@ -542,18 +737,15 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
                 prompt_display,
                 _task_semaphore,
                 event_ts=event_ts,
+                progress_text=progress_text,
             )
         )
         _background_tasks.add(bg_task)
         bg_task.add_done_callback(_background_tasks.discard)
         bg_task.add_done_callback(_log_task_exception)
 
-        await say(
-            f":rocket: *{intent.project}* 프롬프트 실행을 시작합니다. "
-            f"(태스크 ID: {task.task_id}, 취소: `/stop {task.task_id}`)\n"
-            f"> {prompt_display}",
-            thread_ts=thread_ts,
-        )
+        resp = await _post_progress(say, progress_text, task.task_id, thread_ts)
+        task.progress_ts = _response_ts(resp)
         return True
 
     async def _handle_unknown_shell(
@@ -626,21 +818,23 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
         )
 
         # 시작 메시지를 먼저 전송 (백그라운드 태스크보다 먼저)
-        await say(
+        progress_text = (
             f":rocket: 명령어 실행을 시작합니다.\n"
             f"*   태스크 ID: {task.task_id}\n"
             f"*   프로젝트: {intent.project}\n"
             f"{where_line}"
             f"*   명령어: `{intent.command}`\n"
             f"*   로그: `{log_path}`\n\n"
-            f"나중에 결과 확인하실 때 말씀해주세요.",
-            thread_ts=thread_ts,
+            f"나중에 결과 확인하실 때 말씀해주세요. (취소: `/stop {task.task_id}`)"
         )
+        resp = await _post_progress(say, progress_text, task.task_id, thread_ts)
+        task.progress_ts = _response_ts(resp)
 
         bg_task = asyncio.create_task(
             _run_shell_and_report(
                 app, task_manager, project, task, log_path, _task_semaphore,
                 event_ts=event_ts,
+                progress_text=progress_text,
             )
         )
         _background_tasks.add(bg_task)
@@ -733,11 +927,14 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
             return False
 
         if intent.export:
-            await say(
+            resp = await _post_progress(
+                say,
                 f":outbox_tray: `{intent.raw_text}` 데이터 추출 중... "
                 f"(ID: {db_task.task_id}, 취소: `/stop {db_task.task_id}`)",
-                thread_ts=thread_ts,
+                db_task.task_id,
+                thread_ts,
             )
+            db_task.progress_ts = _response_ts(resp)
             bg_task = asyncio.create_task(
                 _run_db_query_export_and_report(
                     app,
@@ -753,11 +950,14 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
                 )
             )
         else:
-            await say(
+            resp = await _post_progress(
+                say,
                 f":mag: `{intent.raw_text}` 조회 중... "
                 f"(ID: {db_task.task_id}, 취소: `/stop {db_task.task_id}`)",
-                thread_ts=thread_ts,
+                db_task.task_id,
+                thread_ts,
             )
+            db_task.progress_ts = _response_ts(resp)
             bg_task = asyncio.create_task(
                 _run_db_query_and_report(
                     app,
@@ -780,6 +980,7 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
     async def _handle_question_intent(
         intent: Intent,
         question: str,
+        user_id: str,
         channel: str,
         thread_ts: str,
         event_ts: str,
@@ -826,24 +1027,22 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
             intent.project or "general",
             "chat",
             (intent.raw_text or question)[:80],
-            "",
+            user_id,
             channel,
             thread_ts=thread_ts,
         )
 
         # 답변 도착 시 삭제할 수 있도록 시작 메시지의 ts를 보관한다.
         # say() 결과가 dict-like가 아닐 수도 있어 방어적으로 처리.
-        progress_response = await say(
+        progress_response = await _post_progress(
+            say,
             f":mag: 질문 처리를 시작합니다. "
             f"(ID: {chat_task.task_id}, 취소: `/stop {chat_task.task_id}`)",
-            thread_ts=thread_ts,
+            chat_task.task_id,
+            thread_ts,
         )
-        progress_ts: str | None = None
-        try:
-            if progress_response is not None:
-                progress_ts = progress_response.get("ts")
-        except Exception:
-            progress_ts = None
+        progress_ts: str | None = _response_ts(progress_response) or None
+        chat_task.progress_ts = progress_ts or ""
 
         bg_task = asyncio.create_task(
             _run_chat_question_and_report(
@@ -992,6 +1191,12 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
     # ----------------------------------------------------------------
     # 버튼 액션 핸들러 (확인/취소)
     # ----------------------------------------------------------------
+
+    @app.action(_TASK_CANCEL_ACTION_ID)
+    async def handle_task_cancel(ack, body, client):
+        """시작 알림의 [취소] 버튼 클릭."""
+        await ack()
+        await _handle_task_cancel(client=client, body=body, task_manager=task_manager)
 
     @app.action("confirm_execute")
     async def handle_confirm(ack, body, client):
@@ -1482,16 +1687,19 @@ async def _run_chat_question_and_report(
             logger.warning("진행 메시지 삭제 실패 (ts=%s)", progress_ts, exc_info=True)
 
     try:
+        answer = ""
         async with semaphore:
-            answer = await answer_question(
-                question,
-                tasks,
-                thread_history,
-                projects=projects,
-                target_project=target_project,
-                on_progress=None,
-                task=task,
-            )
+            # 대기 중에 취소됐으면 CLI 를 띄우지 않고 아래 stopped 분기로 간다.
+            if task.status != "stopped":
+                answer = await answer_question(
+                    question,
+                    tasks,
+                    thread_history,
+                    projects=projects,
+                    target_project=target_project,
+                    on_progress=None,
+                    task=task,
+                )
 
         if task.status == "stopped":
             await app.client.chat_postMessage(
@@ -1541,10 +1749,25 @@ async def _run_shell_and_report(
     log_path: str,
     semaphore: asyncio.Semaphore,
     event_ts: str | None = None,
+    progress_text: str = "",
 ) -> None:
     """셸 명령을 직접 실행하고 완료 시 결과를 보고한다."""
+
+    async def _post_cancelled() -> None:
+        cancel_kwargs: dict = dict(
+            channel=task.channel,
+            text=f":octagonal_sign: 명령어 실행이 취소되었습니다. (ID: {task.task_id})",
+        )
+        if task.thread_ts:
+            cancel_kwargs["thread_ts"] = task.thread_ts
+        await app.client.chat_postMessage(**cancel_kwargs)
+
     try:
         async with semaphore:
+            # 대기 중에 취소됐으면 spawn 하지 않는다.
+            if task.status == "stopped":
+                await _post_cancelled()
+                return
             with open(log_path, "w") as log_file:
                 env = make_safe_env()
                 # systemd 환경에서 누락되는 일반적인 바이너리 경로 보충
@@ -1578,7 +1801,17 @@ async def _run_shell_and_report(
                         env=env,
                     )
                 task.process = proc
+                # spawn 을 기다리는 동안 취소됐으면 stop_task 가 process 를 못 봤으므로 여기서 끝낸다.
+                if task.status == "stopped":
+                    try:
+                        proc.terminate()
+                    except ProcessLookupError:
+                        pass
                 await proc.wait()
+
+        if task.status == "stopped":
+            await _post_cancelled()
+            return
 
         success = proc.returncode == 0
         task_manager.complete_task(task.task_id, success)
@@ -1621,6 +1854,7 @@ async def _run_shell_and_report(
             err_kwargs["thread_ts"] = task.thread_ts
         await app.client.chat_postMessage(**err_kwargs)
     finally:
+        await _finish_progress_buttons(app, task, progress_text)
         await _remove_eyes_reaction(app, task.channel, event_ts)
 
 
@@ -1632,10 +1866,29 @@ async def _run_and_report(
     prompt_display: str,
     semaphore: asyncio.Semaphore,
     event_ts: str | None = None,
+    progress_text: str = "",
 ) -> None:
     try:
+        result = None
         async with semaphore:
-            result = await run_claude(project, task.command, task.args, task)
+            # 대기 중에 취소됐으면 CLI 를 띄우지 않는다.
+            if task.status != "stopped":
+                result = await run_claude(project, task.command, task.args, task)
+
+        # /stop 이나 [취소] 버튼으로 취소된 경우 실패 대신 취소 안내만 보낸다.
+        if task.status == "stopped" or result is None:
+            cancel_kwargs: dict = dict(
+                channel=task.channel,
+                text=(
+                    f":octagonal_sign: *{task.project_name}* `{prompt_display}` "
+                    f"실행이 취소되었습니다. (ID: {task.task_id})"
+                ),
+            )
+            if task.thread_ts:
+                cancel_kwargs["thread_ts"] = task.thread_ts
+            await app.client.chat_postMessage(**cancel_kwargs)
+            return
+
         task_manager.complete_task(task.task_id, result.success)
 
         status = "완료" if result.success else "실패"
@@ -1685,6 +1938,7 @@ async def _run_and_report(
             err_kwargs["thread_ts"] = task.thread_ts
         await app.client.chat_postMessage(**err_kwargs)
     finally:
+        await _finish_progress_buttons(app, task, progress_text)
         await _remove_eyes_reaction(app, task.channel, event_ts)
 
 
@@ -1696,15 +1950,19 @@ async def _run_prompt_and_report(
     prompt_display: str,
     semaphore: asyncio.Semaphore,
     event_ts: str | None = None,
+    progress_text: str = "",
 ) -> None:
     """프로젝트 자유 문장 프롬프트를 `claude -p`로 실행하고 결과를 보고한다."""
     try:
+        result = None
         async with semaphore:
-            result = await run_free_prompt(project, task.args, task)
+            # 대기 중에 취소됐으면 CLI 를 띄우지 않는다.
+            if task.status != "stopped":
+                result = await run_free_prompt(project, task.args, task)
 
         # /stop으로 취소된 경우 결과 대신 취소 안내 (complete_task는 stopped를
         # 덮어쓰지 않음)
-        if task.status == "stopped":
+        if task.status == "stopped" or result is None:
             cancel_kwargs: dict = dict(
                 channel=task.channel,
                 text=f":octagonal_sign: 프롬프트 실행이 취소되었습니다. (ID: {task.task_id})",
@@ -1763,6 +2021,7 @@ async def _run_prompt_and_report(
             err_kwargs["thread_ts"] = task.thread_ts
         await app.client.chat_postMessage(**err_kwargs)
     finally:
+        await _finish_progress_buttons(app, task, progress_text)
         await _remove_eyes_reaction(app, task.channel, event_ts)
 
 
@@ -1780,10 +2039,13 @@ async def _run_db_query_export_and_report(
 ) -> None:
     """DB 조회 → CSV → Excel → Slack 파일 업로드."""
     try:
+        result = None
         async with semaphore:
-            result = await run_db_query_export(question, db_project, task=task)
+            # 대기 중에 취소됐으면 CLI 를 띄우지 않는다.
+            if task.status != "stopped":
+                result = await run_db_query_export(question, db_project, task=task)
 
-        if task.status == "stopped":
+        if task.status == "stopped" or result is None:
             await app.client.chat_postMessage(
                 channel=channel,
                 thread_ts=thread_ts,
@@ -1836,6 +2098,7 @@ async def _run_db_query_export_and_report(
             text=":warning: DB 조회 결과 파일 생성 중 에러가 발생했습니다.",
         )
     finally:
+        await _delete_progress_message(app.client, channel, _task_progress_ts(task))
         await _remove_eyes_reaction(app, channel, event_ts)
 
 
@@ -1852,8 +2115,11 @@ async def _run_db_query_and_report(
     event_ts: str | None = None,
 ) -> None:
     try:
+        answer = ""
         async with semaphore:
-            answer = await run_db_query(question, db_project, task=task)
+            # 대기 중에 취소됐으면 CLI 를 띄우지 않는다.
+            if task.status != "stopped":
+                answer = await run_db_query(question, db_project, task=task)
 
         if task.status == "stopped":
             await app.client.chat_postMessage(
@@ -1885,4 +2151,5 @@ async def _run_db_query_and_report(
             text=":warning: DB 조회 중 에러가 발생했습니다. 로그를 확인해주세요.",
         )
     finally:
+        await _delete_progress_message(app.client, channel, _task_progress_ts(task))
         await _remove_eyes_reaction(app, channel, event_ts)

@@ -97,6 +97,9 @@ pyproject.toml         # 의존성 및 스크립트 정의
 - `complete_task()`는 `stopped` 상태를 덮어쓰지 않음 (terminate→subprocess 자연 종료의 늦은 도착 보호)
 - 태스크 타입(`create_task` 2번째 인자): 명령 실행은 커맨드명(`harness` 등), 그 외 `"shell"`, `"prompt"`(project_prompt), `"chat"`, `"db"`, `"db_export"`
 - `cleanup_old(max_age=1800)` — 완료 후 30분 지난 태스크는 목록에서 제거
+- 시작 알림의 [취소] 버튼(`action_id="task_cancel"`, value `"<task_id>:<_BOOT_NONCE>"`): `handlers._handle_task_cancel`이 nonce, 태스크 존재와 채널, 요청자 본인(`task.user`) 순으로 확인한 뒤 `stop_task()`를 호출하고 버튼을 걷는다. 재시작 전 메시지의 버튼은 nonce 불일치로 거부한다. blocks 게시가 실패하면 평문(`/stop ID` 안내 포함)으로 다시 보낸다
+- 세마포어 대기 중에 취소되면 각 `_run_*_and_report`가 CLI를 띄우지 않고 stopped 분기로 간다. spawn 직전과 `task.process = proc` 직후에도 status를 다시 보고, 직후에 stopped면 `terminate()`한다
+- 시작 알림 ts는 `TaskInfo.progress_ts`에 둔다. 질문과 DB 조회/추출은 결과 게시 후 알림을 지우고, 명령/프롬프트/shell은 완료 시 버튼만 걷는다 (취소된 태스크는 "취소 요청됨" 문구 유지)
 
 ### 자연어 DB 조회
 
