@@ -158,13 +158,16 @@ def _task_progress_ts(task) -> str:
 async def _finish_progress_buttons(app: AsyncApp, task, progress_text: str) -> None:
     """명령, 프롬프트, shell 완료 시 시작 알림의 버튼만 걷는다.
 
-    취소된 태스크는 버튼 콜백이 이미 "취소 요청됨" 문구로 바꿔 두었으므로 건드리지 않는다.
+    취소된 태스크는 취소됨 문구로 바꾼다. /stop 으로 끊으면 버튼 콜백을 거치지 않아
+    버튼이 남기 때문이다. 콜백이 이미 "취소 요청됨" 으로 바꾼 경우 덮어써도 뜻이 같다.
     """
-    if task.status == "stopped" or not progress_text:
+    if task.status == "stopped":
+        text = f":octagonal_sign: 취소됨 (ID: {task.task_id})"
+    elif progress_text:
+        text = progress_text
+    else:
         return
-    await _clear_progress_buttons(
-        app.client, task.channel, _task_progress_ts(task), progress_text
-    )
+    await _clear_progress_buttons(app.client, task.channel, _task_progress_ts(task), text)
 
 
 async def _ephemeral(client, channel: str, user: str, text: str, thread_ts=None) -> None:
@@ -674,6 +677,10 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
 
         resp = await _post_progress(say, progress_text, task.task_id, thread_ts)
         task.progress_ts = _response_ts(resp)
+        # 알림 게시를 기다리는 사이 백그라운드 실행이 먼저 끝났으면 그쪽은 ts 를 못 봤으므로
+        # 여기서 버튼을 걷는다.
+        if task.status != "running":
+            await _finish_progress_buttons(app, task, progress_text)
         return True
 
     async def _handle_project_prompt_intent(
@@ -746,6 +753,10 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
 
         resp = await _post_progress(say, progress_text, task.task_id, thread_ts)
         task.progress_ts = _response_ts(resp)
+        # 알림 게시를 기다리는 사이 백그라운드 실행이 먼저 끝났으면 그쪽은 ts 를 못 봤으므로
+        # 여기서 버튼을 걷는다.
+        if task.status != "running":
+            await _finish_progress_buttons(app, task, progress_text)
         return True
 
     async def _handle_unknown_shell(
