@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 import pytest
 
 from slack_bot.config import DBConfig, ProjectConfig
-from slack_bot.intent_router import _extract_json, route_intent
+from slack_bot.intent_router import _call_haiku, _extract_json, route_intent
 
 INCIDENT_TEXT = (
     "trader, cow-alert 프로젝트 관련해서 하네스나 이런거 실행할때 orca 세션 만들어서 "
@@ -101,3 +102,85 @@ async def test_db_export_action_sets_export_flag():
 def test_extract_json_handles_code_fence():
     assert _extract_json('```json\n{"a": 1}\n```') == {"a": 1}
     assert _extract_json("없음") is None
+
+
+@pytest.mark.asyncio
+async def test_unknown_shell_stays_blocked_without_model():
+    """프로젝트 없는 셸 명령은 모델을 거치지 않고 unknown_shell 로 막힌다."""
+    model = _fake({"project": "trader", "action": "shell"})
+    i = await route_intent("uv run pytest 실행해줘", _projects(), call_model=model)
+    assert i.type == "unknown_shell"
+    assert model.calls == []
+
+
+@pytest.mark.asyncio
+async def test_command_args_come_from_text_not_model():
+    """모델이 args 를 비우거나 지어내도 이슈 ID 는 원문에서 뽑는다."""
+    model = _fake(
+        {"project": "trader", "action": "command", "command": "review", "args": "지어낸 값"}
+    )
+    i = await route_intent("trader TRD-1 리뷰해줘", _projects(), call_model=model)
+    assert i.type == "command"
+    assert i.args.startswith("TRD-1")
+    assert "지어낸" not in i.args
+
+
+class _FakeProc:
+    def __init__(self, returncode=0, stdout=b"{}", stderr=b"", hang=False):
+        self.returncode = returncode
+        self._out = (stdout, stderr)
+        self._hang = hang
+        self.killed = False
+
+    async def communicate(self):
+        if self._hang:
+            await asyncio.sleep(60)
+        return self._out
+
+    def kill(self):
+        self.killed = True
+
+    async def wait(self):
+        return self.returncode
+
+
+def _patch_exec(monkeypatch, proc):
+    seen = {}
+
+    async def fake_exec(*args, **kwargs):
+        seen["args"] = args
+        seen["kwargs"] = kwargs
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    return seen
+
+
+@pytest.mark.asyncio
+async def test_call_haiku_cuts_off_mcp_and_settings(monkeypatch):
+    """분류 호출에는 MCP 도구와 CLAUDE.md 가 들어오지 않아야 한다."""
+    seen = _patch_exec(monkeypatch, _FakeProc())
+    await _call_haiku("system", "text")
+    args = seen["args"]
+    assert args[args.index("--tools") + 1] == ""
+    assert args[args.index("--setting-sources") + 1] == ""
+    assert "--strict-mcp-config" in args
+    assert seen["kwargs"]["stdin"] == asyncio.subprocess.DEVNULL
+    assert seen["kwargs"]["cwd"]
+
+
+@pytest.mark.asyncio
+async def test_call_haiku_kills_process_on_timeout(monkeypatch):
+    proc = _FakeProc(hang=True)
+    _patch_exec(monkeypatch, proc)
+    monkeypatch.setattr("slack_bot.intent_router.ROUTER_TIMEOUT", 0.01)
+    with pytest.raises(asyncio.TimeoutError):
+        await _call_haiku("system", "text")
+    assert proc.killed
+
+
+@pytest.mark.asyncio
+async def test_call_haiku_raises_on_nonzero_exit(monkeypatch):
+    _patch_exec(monkeypatch, _FakeProc(returncode=1, stderr=b"boom"))
+    with pytest.raises(RuntimeError, match="boom"):
+        await _call_haiku("system", "text")
