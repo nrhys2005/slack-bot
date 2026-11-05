@@ -16,7 +16,8 @@ from slack_bot.attachments import build_attachment_note, download_slack_files
 from slack_bot.chat import answer_question
 from slack_bot.config import ProjectConfig, load_projects
 from slack_bot.db_query import run_db_query, run_db_query_export
-from slack_bot.intent import _TASK_ID_RE, Intent, parse_intent
+from slack_bot.intent import _TASK_ID_RE, Intent
+from slack_bot.intent_router import route_intent
 from slack_bot.remote import build_remote_shell_args
 from slack_bot.runner import run_claude, run_free_prompt
 from slack_bot.security import check_auth, make_safe_env, redact_output
@@ -236,7 +237,7 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
                 question = "첨부된 파일을 확인하고 내용을 정리해줘."
 
         # 인텐트 파싱 — 첨부 노트가 분류에 영향을 주지 않도록 원본 질문으로 파싱한다.
-        intent = parse_intent(question, projects)
+        intent = await route_intent(question, projects)
 
         # 첨부 노트를 claude에 도달하는 필드에 주입한다. 명령/셸 실행 인텐트는
         # 첨부와 무관하므로 건드리지 않는다.
