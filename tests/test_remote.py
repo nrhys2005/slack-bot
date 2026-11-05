@@ -107,7 +107,7 @@ def test_system_prompt_includes_remote_section(tmp_path):
 
 @pytest.mark.asyncio
 async def test_run_free_prompt_appends_remote_system_prompt(tmp_path):
-    from slack_bot.runner import run_free_prompt
+    from slack_bot.runner import RESPONSE_GUIDE, run_free_prompt
 
     proc = MagicMock()
     proc.stdout.__aiter__.return_value = iter([])
@@ -127,6 +127,7 @@ async def test_run_free_prompt_appends_remote_system_prompt(tmp_path):
     cmd = list(mock_exec.call_args.args)
     idx = cmd.index("--append-system-prompt")
     assert "cow-server" in cmd[idx + 1]
+    assert RESPONSE_GUIDE in cmd[idx + 1]
 
 
 @pytest.mark.asyncio
@@ -191,3 +192,22 @@ def test_chat_system_prompt_requires_summary_and_evidence():
     prompt = _build_system_prompt()
     assert "3500자 이내" in prompt
     assert "근거" in prompt
+
+
+def test_db_system_prompts_require_summary_and_evidence(tmp_path):
+    from slack_bot.config import DBConfig
+    from slack_bot.db_query import _build_sqlite_system_prompt
+    from slack_bot.db_query import _build_system_prompt as build_pg_prompt
+
+    sqlite_project = ProjectConfig(
+        name="local", path=str(tmp_path), db=DBConfig(db_type="sqlite", db_path="a.db"),
+    )
+    pg_envs = {
+        "main": {
+            "read_host": "h", "port": "5432", "username": "u",
+            "db_name": "d", "password": "p",
+        }
+    }
+    for prompt in (_build_sqlite_system_prompt(sqlite_project), build_pg_prompt(pg_envs)):
+        assert "3500자 이내" in prompt
+        assert "근거" in prompt

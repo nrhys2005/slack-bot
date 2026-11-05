@@ -392,12 +392,12 @@ class TestLongOutputBlocks:
 
         assert len(blocks) >= 2
         _assert_blocks_within_slack_limit(blocks)
-        # 코드펜스를 벗기고 이으면 원문과 같아야 한다 (내용 유실 없음)
-        joined = "".join(
+        # 줄바꿈에서 잘렸으므로 펜스를 벗긴 조각을 줄바꿈으로 이으면 원문과 정확히 같아야 한다
+        joined = "\n".join(
             b["text"]["text"].removeprefix("```\n").removesuffix("\n```")
             for b in blocks
         )
-        assert joined.replace("\n", "") == output.replace("\n", "")
+        assert joined == output
 
     def test_output_blocks_split_single_long_line(self):
         from slack_bot.handlers import _output_blocks
