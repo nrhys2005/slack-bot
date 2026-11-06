@@ -39,6 +39,7 @@ slack_bot/
 ├── chat.py            # Claude CLI로 태스크 출력 분석, 프로젝트 상태 파악, 질문 답변
 ├── db_query.py        # DB 프로젝트 모델 기반 자연어→SQL→psql 실행
 ├── task_manager.py    # TaskInfo/TaskManager — 실행 중 태스크 추적, 출력 누적
+├── orca_session.py    # orca 터미널/워크트리에서 claude -p 실행, 종료 후 정리, 재시작 후 고아 세션 정리
 ├── remote.py          # remote 설정 프로젝트의 ssh 명령 조립, claude -p 용 원격 서버 안내문
 ├── attachments.py     # Slack 첨부파일(이미지/표/문서) 다운로드 → claude -p가 Read 할 프롬프트 노트 생성
 └── security.py        # 서브프로세스 env 생성, 출력 마스킹, 인증, rate limit, 감사 로깅
@@ -167,6 +168,12 @@ pyproject.toml         # 의존성 및 스크립트 정의
 - `run_claude(project, command, args, task) -> RunResult` — `/<command> <args>` 슬래시 명령 실행 (`--auto` 자동 부착)
 - `run_free_prompt(project, prompt, task) -> RunResult` — 슬래시가 아닌 자유 문장 프롬프트를 그대로 실행 (project_prompt passthrough용). `run_claude`와 실행 로직은 내부 `_run_prompt()`로 공유
 - 실행: `claude -p "<prompt>" --output-format text --permission-mode bypassPermissions`
+- orca 세션: `projects.yaml` 에서 `orca: true` 인 프로젝트는 `orca_session.run_in_session` 으로 실행한다
+  - 슬래시 명령은 새 워크트리에서, 자유 프롬프트는 프로젝트 체크아웃의 터미널에서 돈다 (로그, `.env` 처럼 git 에 없는 파일이 필요한 일이 많음)
+  - 터미널은 항상 닫는다. 워크트리는 미커밋 변경, 하위 워크트리, 어떤 브랜치에도 없는 HEAD 커밋, 다시 만들 수 없는 gitignore 파일이 없을 때만 지우고(`--force` 안 씀), 브랜치는 어떤 원격에도 없는 커밋이 없을 때만 지운다. 남기면 결과 메시지나 취소 메시지로 알린다
+  - `terminal create` 를 부르기 전에 orca 가 실패하면 직접 실행으로 넘어가고 결과에 그 사실을 적는다. 그 뒤의 실패는 터미널이 이미 만들어졌을 수 있어 넘어가지 않는다
+  - 봇이 재시작돼도 orca 터미널은 계속 돈다. Slack 연결을 열기 전에 `sweep_orphans` 가 `orca: true` 프로젝트에서 터미널이 끝난 봇 세션 워크트리를 정리하지만, 그 작업의 결과 메시지는 보내지 못한다
+  - 터미널의 환경 변수는 봇이 아니라 `orca-server` 서비스에서 온다. 봇의 `.env` 값은 전달되지 않는다
 - stdout 라인별 스트리밍 → `task.output_lines`에 누적
 - 타임아웃 3600초, 출력 3900자 제한
 

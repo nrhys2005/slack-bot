@@ -41,6 +41,8 @@ class ProjectConfig:
     mcp_tools: list[str] = field(default_factory=list)
     status_paths: list[str] = field(default_factory=list)
     remote: RemoteConfig | None = None
+    # True 면 명령과 자유 프롬프트를 orca 세션에서 실행한다 (orca_session.py)
+    orca: bool = False
 
 
 @dataclass
@@ -118,6 +120,7 @@ def load_projects(config_path: str | None = None) -> AppConfig:
             mcp_tools=mcp_tools,
             status_paths=cfg.get("status_paths", []),
             remote=remote_config,
+            orca=bool(cfg.get("orca", False)),
         )
 
     security_raw = raw.get("security", {})
