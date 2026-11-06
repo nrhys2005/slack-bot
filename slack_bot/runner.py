@@ -82,6 +82,10 @@ async def _run_prompt(
     )
     cmd.extend(["--append-system-prompt", system_append])
 
+    # 슬롯 획득과 spawn 사이에 취소됐으면 CLI 를 띄우지 않는다.
+    if task.status == "stopped":
+        return RunResult(success=False, output="", return_code=-1)
+
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         cwd=project.path,
@@ -90,7 +94,7 @@ async def _run_prompt(
         env=env,
     )
 
-    task.process = proc
+    task.attach_process(proc)
 
     if proc.stdout is None:
         raise RuntimeError("stdout pipe not created")

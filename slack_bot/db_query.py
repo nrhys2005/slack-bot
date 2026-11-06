@@ -311,6 +311,10 @@ async def run_db_query(
         "bypassPermissions",
     ]
 
+    # 슬롯 획득과 spawn 사이에 취소됐으면 CLI 를 띄우지 않는다.
+    if task is not None and task.status == "stopped":
+        return ":octagonal_sign: DB 조회가 취소되었습니다."
+
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -320,7 +324,7 @@ async def run_db_query(
             env=env,
         )
         if task is not None:
-            task.process = proc
+            task.attach_process(proc)
 
         # stdout을 라인 단위로 스트리밍하며 누적 바이트를 제한한다.
         # 한계 초과 시 프로세스를 kill 해 메모리 폭주/행 차단.
@@ -557,6 +561,10 @@ async def run_db_query_export(
             "bypassPermissions",
         ]
 
+        # 슬롯 획득과 spawn 사이에 취소됐으면 CLI 를 띄우지 않는다.
+        if task is not None and task.status == "stopped":
+            return ExportResult(summary="", error="cancelled")
+
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             cwd=project.path,
@@ -565,7 +573,7 @@ async def run_db_query_export(
             env=env,
         )
         if task is not None:
-            task.process = proc
+            task.attach_process(proc)
 
         if proc.stdout is None:
             raise RuntimeError("stdout pipe not created")

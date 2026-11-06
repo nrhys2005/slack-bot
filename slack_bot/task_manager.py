@@ -1,8 +1,27 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import signal
 import time
 from dataclasses import dataclass, field
+
+
+def terminate_process(proc: asyncio.subprocess.Process) -> None:
+    """서브프로세스를 종료한다. 자기 프로세스 그룹의 리더면 그룹 전체에 SIGTERM 을 보낸다.
+
+    shell 은 start_new_session=True 로 띄워 sh 가 그룹 리더가 된다. sh 만 죽이면 그 아래
+    명령이 고아로 남으므로 그룹째 끝낸다. getpgid(pid) == pid 일 때만 killpg 하는 것은
+    그룹을 새로 만들지 않은 자식(claude -p 등)의 경우 봇 자신의 그룹을 죽이지 않기 위해서다.
+    """
+    try:
+        pid = proc.pid
+        if isinstance(pid, int) and pid > 0 and os.getpgid(pid) == pid:
+            os.killpg(pid, signal.SIGTERM)
+        else:
+            proc.terminate()
+    except ProcessLookupError:
+        pass
 
 
 @dataclass
@@ -19,6 +38,21 @@ class TaskInfo:
     output_lines: list[str] = field(default_factory=list)
     process: asyncio.subprocess.Process | None = None
     complete_time: float | None = None
+    # [취소] 버튼이 달린 시작 알림 메시지의 ts. 완료 시 버튼을 걷거나 메시지를 지울 때 쓴다.
+    progress_ts: str = ""
+    # stop_task 가 set 한다. 세마포어 대기 중인 태스크가 슬롯을 기다리지 않고 바로 빠져나오게 한다.
+    stop_event: asyncio.Event = field(default_factory=asyncio.Event)
+
+    def attach_process(self, proc: asyncio.subprocess.Process) -> bool:
+        """서브프로세스를 등록한다. 이미 취소된 태스크면 바로 종료하고 True 를 돌려준다.
+
+        spawn 을 기다리는 동안 stop 되면 stop_task 는 process 를 보지 못해 종료하지 못한다.
+        """
+        self.process = proc
+        if self.status == "stopped":
+            terminate_process(proc)
+            return True
+        return False
 
     @property
     def elapsed(self) -> float:
@@ -165,12 +199,10 @@ class TaskManager:
         if task is None or task.status != "running":
             return False
         if task.process and task.process.returncode is None:
-            try:
-                task.process.terminate()
-            except ProcessLookupError:
-                pass
+            terminate_process(task.process)
         task.status = "stopped"
         task.complete_time = time.time()
+        task.stop_event.set()
         return True
 
     def complete_task(self, task_id: str, success: bool) -> None:

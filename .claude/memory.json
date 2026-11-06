@@ -1,1 +1,22 @@
-[]
+[
+  {
+    "issue": "SB-CANCEL-01",
+    "task": "진행 메시지 취소 버튼과 대기 중 취소 가드 추가",
+    "result": "success",
+    "reason": null,
+    "fix": null,
+    "tags": [
+      "task-cancel",
+      "slack-button",
+      "semaphore",
+      "subprocess"
+    ],
+    "pr": "#36",
+    "branch": "feat/cancel-button",
+    "date": "2026-11-06",
+    "tests": 38,
+    "validation": "REFINE",
+    "review": "APPROVE",
+    "notes": "ra-ai slack-bot RA1-17340 이식. 검증 REFINE 1회(명령/shell 취소 분기 부재, spawn await 중 stop 경합). 리뷰 APPROVE 후 권장 3건(/stop 취소 시 버튼 잔존, 빠른 완료 시 버튼 잔존, 뮤테이션 사각지대) 반영."
+  }
+]

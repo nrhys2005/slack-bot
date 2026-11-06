@@ -244,6 +244,10 @@ async def answer_question(
         elif db_project and Path(db_project.path).is_dir():
             cwd = db_project.path
 
+        # 슬롯 획득과 spawn 사이에 취소됐으면 CLI 를 띄우지 않는다.
+        if task is not None and task.status == "stopped":
+            return ":octagonal_sign: 질문 처리가 취소되었습니다."
+
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             cwd=cwd,
@@ -252,7 +256,7 @@ async def answer_question(
             env=env,
         )
         if task is not None:
-            task.process = proc
+            task.attach_process(proc)
         try:
             stdout, stderr = await asyncio.wait_for(
                 proc.communicate(), timeout=CHAT_SAFETY_TIMEOUT
