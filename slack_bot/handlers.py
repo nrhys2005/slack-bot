@@ -119,6 +119,12 @@ def _response_ts(resp) -> str:
 _BLOCKS_ERROR_CODES = frozenset({"invalid_blocks", "invalid_blocks_format"})
 
 
+def _cleanup_note_suffix(result) -> str:
+    if result is None or not result.cleanup_note:
+        return ""
+    return f"\n:warning: {result.cleanup_note}"
+
+
 def _stop_hint(task_id: str) -> str:
     return f"\n취소: `/stop {task_id}`"
 
@@ -1979,6 +1985,7 @@ async def _run_and_report(
                 text=(
                     f":octagonal_sign: *{task.project_name}* `{prompt_display}` "
                     f"실행이 취소되었습니다. (ID: {task.task_id})"
+                    + _cleanup_note_suffix(result)
                 ),
             )
             if task.thread_ts:
@@ -2062,7 +2069,10 @@ async def _run_prompt_and_report(
         if task.status == "stopped" or result is None:
             cancel_kwargs: dict = dict(
                 channel=task.channel,
-                text=f":octagonal_sign: 프롬프트 실행이 취소되었습니다. (ID: {task.task_id})",
+                text=(
+                    f":octagonal_sign: 프롬프트 실행이 취소되었습니다. (ID: {task.task_id})"
+                    + _cleanup_note_suffix(result)
+                ),
             )
             if task.thread_ts:
                 cancel_kwargs["thread_ts"] = task.thread_ts

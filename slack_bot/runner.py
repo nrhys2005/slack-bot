@@ -33,6 +33,8 @@ class RunResult:
     success: bool
     output: str
     return_code: int
+    # orca 세션 정리에서 남긴 것 안내. 취소 메시지는 output 을 보내지 않아 따로 둔다.
+    cleanup_note: str = ""
 
 
 async def run_claude(
@@ -150,7 +152,9 @@ async def _run_prompt(
             f"\n\n:warning: 실행 시간이 {SUBPROCESS_TIMEOUT}초를 초과하여 "
             "강제 종료되었습니다."
         )
-        return RunResult(success=False, output=output + timeout_msg, return_code=-1)
+        return RunResult(
+            success=False, output=output + timeout_msg + fallback_note, return_code=-1
+        )
 
     stderr_data = await stderr_task
 
@@ -184,4 +188,5 @@ def _session_result(task: TaskInfo, outcome: SessionOutcome) -> RunResult:
         success=outcome.return_code == 0 and not outcome.timed_out,
         output=output,
         return_code=outcome.return_code,
+        cleanup_note=outcome.cleanup_note,
     )
