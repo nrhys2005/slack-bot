@@ -165,6 +165,10 @@ async def _keep_reasons(worktree_path: str) -> list[str]:
 async def _remove_branch_if_safe(git_dir: str, branch: str) -> str:
     """원격에 올라가지 않은 커밋이 없을 때만 로컬 브랜치를 지운다. 남기면 안내 문구를 돌려준다."""
     name = branch.removeprefix("refs/heads/")
+    # worktree list 의 branch 는 현재 브랜치다. 안에서 main 으로 옮겼으면 그 브랜치를 지우면 안 된다.
+    if not SESSION_NAME_RE.match(name.rsplit("/", 1)[-1]):
+        logger.info("세션 브랜치가 아니라 남김: %s", name)
+        return ""
     code, count = await _git(
         git_dir, "rev-list", "--count", f"refs/heads/{name}", "--not", "--remotes"
     )
@@ -316,9 +320,8 @@ async def run_in_session(
             worktree = created["worktree"]
             selector = f"id:{worktree['id']}"
         if handle.stop_requested.is_set():
-            if worktree is not None:
-                await _cleanup_worktree(worktree)
-            return SessionOutcome(return_code=-1)
+            cleanup_note = await _cleanup_worktree(worktree) if worktree is not None else ""
+            return SessionOutcome(return_code=-1, cleanup_note=cleanup_note)
 
         os.makedirs(session_dir, mode=0o700)
         script = _write_script(session_dir, cmd)

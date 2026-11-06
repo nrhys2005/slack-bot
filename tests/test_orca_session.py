@@ -24,7 +24,8 @@ def _project(tmp_path, orca: bool = True) -> ProjectConfig:
     return ProjectConfig(name="p", path=str(tmp_path), orca=orca)
 
 
-WORKTREE = {"id": "r::/wt/a", "path": "/wt/a", "branch": "refs/heads/me/a"}
+SESSION_BRANCH = "me/slackbot-001-1106-010203"
+WORKTREE = {"id": "r::/wt/a", "path": "/wt/a", "branch": f"refs/heads/{SESSION_BRANCH}"}
 
 
 class FakeOrca:
@@ -93,7 +94,7 @@ async def test_isolated_run_collects_output_and_removes_everything(tmp_path):
     assert orca.called("terminal", "close", "--worktree", "id:r::/wt/a", "--all")
     rm = next(c for c in orca.calls if c[:2] == ("worktree", "rm"))
     assert "--force" not in rm
-    git.assert_any_await("/repo/.git", "branch", "-D", "me/a")
+    git.assert_any_await("/repo/.git", "branch", "-D", SESSION_BRANCH)
     assert not os.path.exists(orca.session_dir)
 
 
@@ -140,7 +141,23 @@ async def test_branch_with_unpushed_commits_is_kept(tmp_path):
 
     assert orca.called("worktree", "rm")
     assert all(c.args[1] != "branch" for c in git.await_args_list)
-    assert "me/a" in outcome.cleanup_note and "2개" in outcome.cleanup_note
+    assert SESSION_BRANCH in outcome.cleanup_note and "2개" in outcome.cleanup_note
+
+
+@pytest.mark.asyncio
+async def test_sweep_never_deletes_non_session_branch(tmp_path):
+    # 세션 안에서 main 으로 옮긴 뒤 재시작하면 worktree list 의 branch 는 main 이다.
+    worktree = {
+        "id": "r::/w/1", "path": "/w/1", "branch": "refs/heads/main",
+        "displayName": "slackbot-001-1106-010203",
+    }
+    orca, calls = _sweep_orca([worktree], [])
+    git = _git()
+    with patch.object(orca_session, "_orca", orca), patch.object(orca_session, "_git", git):
+        await sweep_orphans({"p": _project(tmp_path)})
+
+    assert _removed(calls) == ["id:r::/w/1"]
+    assert all(c.args[1] != "branch" for c in git.await_args_list)
 
 
 @pytest.mark.asyncio
@@ -229,6 +246,15 @@ async def test_stopped_before_terminal_create_never_starts_command(tmp_path):
 
     assert not orca.called("terminal", "create")
     assert orca.called("worktree", "rm")
+
+
+@pytest.mark.asyncio
+async def test_stopped_before_terminal_create_reports_kept_worktree(tmp_path):
+    orca, git = FakeOrca(), _git(status=" M a.py\n")
+    with patch.object(orca_session, "_orca", orca), patch.object(orca_session, "_git", git):
+        outcome = await run_in_session(_project(tmp_path), ["claude"], _task("stopped"), True, 60)
+
+    assert "/wt/a" in outcome.cleanup_note
 
 
 @pytest.mark.asyncio
