@@ -256,13 +256,7 @@ async def answer_question(
             env=env,
         )
         if task is not None:
-            task.process = proc
-            # spawn 을 기다리는 동안 취소됐으면 stop_task 가 process 를 못 봤으므로 여기서 끝낸다.
-            if task.status == "stopped":
-                try:
-                    proc.terminate()
-                except ProcessLookupError:
-                    pass
+            task.attach_process(proc)
         try:
             stdout, stderr = await asyncio.wait_for(
                 proc.communicate(), timeout=CHAT_SAFETY_TIMEOUT

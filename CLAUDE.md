@@ -93,14 +93,14 @@ pyproject.toml         # 의존성 및 스크립트 정의
 - 자연어 목록 조회("태스크"/"task")는 제거됨 — "태스크"라는 단어가 든 일반 질문까지 목록 조회로 오매칭돼 항상 "실행 중인 태스크가 없습니다."로 응답하던 문제 방지
 
 - 명령 실행(`command`/`shell_exec`)뿐 아니라 질문 답변(`question`/`status`)과 DB 조회/추출(`db_query`)도 TaskManager에 등록되어 자연어로 중단 가능
-- `TaskManager.stop_task()` → 백그라운드 `claude -p` 프로세스에 `terminate()` + `task.status="stopped"`
+- `TaskManager.stop_task()` → 백그라운드 프로세스 종료(`task_manager.terminate_process`) + `task.status="stopped"` + `task.stop_event.set()`. shell은 `start_new_session=True`로 띄워 그룹 리더(`getpgid(pid) == pid`)일 때만 `killpg`로 그룹째 끝내고, 그 외는 `terminate()`. remote(ssh) 취소 안내에는 원격 명령이 계속될 수 있다고 덧붙인다
 - 완료 후 `task.status == "stopped"`이면 결과 대신 ":octagonal_sign: 취소되었습니다." 응답
 - `complete_task()`는 `stopped` 상태를 덮어쓰지 않음 (terminate→subprocess 자연 종료의 늦은 도착 보호)
 - 태스크 타입(`create_task` 2번째 인자): 명령 실행은 커맨드명(`harness` 등), 그 외 `"shell"`, `"prompt"`(project_prompt), `"chat"`, `"db"`, `"db_export"`
 - `cleanup_old(max_age=1800)` — 완료 후 30분 지난 태스크는 목록에서 제거
-- 시작 알림의 [취소] 버튼(`action_id="task_cancel"`, value `"<task_id>:<_BOOT_NONCE>"`): `handlers._handle_task_cancel`이 nonce, 태스크 존재와 채널, 요청자 본인(`task.user`) 순으로 확인한 뒤 `stop_task()`를 호출하고 버튼을 걷는다. 재시작 전 메시지의 버튼은 nonce 불일치로 거부한다. blocks 게시가 실패하면 평문(`/stop ID` 안내 포함)으로 다시 보낸다
-- 세마포어 대기 중에 취소되면 각 `_run_*_and_report`가 CLI를 띄우지 않고 stopped 분기로 간다. spawn 직전과 `task.process = proc` 직후에도 status를 다시 보고, 직후에 stopped면 `terminate()`한다
-- 시작 알림 ts는 `TaskInfo.progress_ts`에 둔다. 질문과 DB 조회/추출은 결과 게시 후 알림을 지우고, 명령/프롬프트/shell은 완료 시 버튼만 걷는다 (취소된 태스크는 "취소됨 (ID: NNN)" 문구로 바꾼다. `/stop`은 버튼 콜백을 거치지 않기 때문). 실행이 알림 게시보다 먼저 끝나면 ts를 넣은 직후 handler가 직접 걷는다
+- 시작 알림의 [취소] 버튼(`action_id="task_cancel"`, value `"<task_id>:<_BOOT_NONCE>"`): `handlers._handle_task_cancel`이 nonce, 태스크 존재와 채널, 요청자 본인(`task.user`) 순으로 확인한 뒤 `stop_task()`를 호출하고 버튼을 걷는다. 재시작 전 메시지의 버튼은 nonce 불일치로 거부한다. 본인 작업이 이미 끝났으면 그 자리에서 버튼을 걷는다. `/stop ID` 안내는 `_post_progress`가 base 문구 뒤에 붙인다. blocks 오류(`invalid_blocks`, `invalid_blocks_format`)일 때만 평문으로 다시 보내고 그 밖의 Slack 오류는 그대로 올린다. 백그라운드보다 먼저 게시하는 경로(shell, DB, 질문)는 게시가 실패하면 태스크를 실패로 닫는다
+- 각 `_run_*_and_report`는 `async with _task_slot(semaphore, task)`로 슬롯을 기다린다. 슬롯 획득과 `stop_event` 중 먼저 끝나는 쪽을 보므로 대기 중 취소는 슬롯이 비기를 기다리지 않고 바로 stopped 분기로 간다. spawn 직전에도 status를 보고, spawn 직후에는 `TaskInfo.attach_process(proc)`가 등록과 함께 stopped면 종료한다
+- 시작 알림 ts는 `TaskInfo.progress_ts`에 둔다. 질문과 DB 조회/추출은 결과 게시 후 알림을 지우고, 명령/프롬프트/shell은 완료 시 base 문구로 되돌려 버튼과 `/stop` 안내를 걷는다 (취소된 태스크는 "취소됨 (ID: NNN)" 문구로 바꾼다. `/stop`은 버튼 콜백을 거치지 않기 때문). 실행이 알림 게시보다 먼저 끝나면 ts를 넣은 직후 handler가 직접 걷는다
 
 ### 자연어 DB 조회
 

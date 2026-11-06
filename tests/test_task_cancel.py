@@ -71,7 +71,11 @@ def _cancel_body(
         "actions": [{"action_id": _TASK_CANCEL_ACTION_ID, "value": value}],
         "user": {"id": user},
         "channel": {"id": channel},
-        "message": {"ts": "2000.0", "text": "시작 알림 원문", "thread_ts": "1000.0"},
+        "message": {
+            "ts": "2000.0",
+            "text": f"시작 알림 원문\n취소: `/stop {task_id}`",
+            "thread_ts": "1000.0",
+        },
     }
 
 
@@ -190,15 +194,37 @@ class TestProgressBlocks:
         err = SlackApiError("invalid_blocks", {"ok": False, "error": "invalid_blocks"})
         say = AsyncMock(side_effect=[err, {"ts": "3000.0"}])
 
-        resp = await _post_progress(say, "시작 (취소: `/stop 001`)", "001", "1000.0")
+        resp = await _post_progress(say, "시작 (ID: 001)", "001", "1000.0")
 
         assert resp == {"ts": "3000.0"}
         assert say.await_count == 2
         first, second = say.await_args_list
         assert "blocks" in first.kwargs
         assert "blocks" not in second.kwargs
-        assert second.kwargs["text"] == "시작 (취소: `/stop 001`)"
+        assert second.kwargs["text"] == "시작 (ID: 001)\n취소: `/stop 001`"
         assert second.kwargs["thread_ts"] == "1000.0"
+
+    @pytest.mark.asyncio
+    async def test_other_slack_errors_are_raised_without_retry(self):
+        err = SlackApiError(
+            "channel_not_found", {"ok": False, "error": "channel_not_found"}
+        )
+        say = AsyncMock(side_effect=err)
+
+        with pytest.raises(SlackApiError):
+            await _post_progress(say, "시작 (ID: 001)", "001", "1000.0")
+
+        assert say.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_progress_text_carries_stop_hint(self):
+        say = AsyncMock(return_value={"ts": "3000.0"})
+
+        await _post_progress(say, "시작 (ID: 001)", "001", "1000.0")
+
+        text = say.await_args.kwargs["text"]
+        assert text == "시작 (ID: 001)\n취소: `/stop 001`"
+        assert say.await_args.kwargs["blocks"][0]["text"]["text"] == text
 
 
 # ---------------------------------------------------------------------------
@@ -254,7 +280,7 @@ class TestTaskCancelCallback:
         assert "이미 종료" not in text
 
     @pytest.mark.asyncio
-    async def test_already_finished_task_ephemeral_only(self):
+    async def test_already_finished_task_clears_buttons(self):
         task = _make_task()
         task.status = "completed"
         tm = _manager_with(task)
@@ -263,7 +289,11 @@ class TestTaskCancelCallback:
         await _handle_task_cancel(client=client, body=_cancel_body(), task_manager=tm)
 
         assert "이미 종료된 작업" in _ephemeral_text(client)
-        client.chat_update.assert_not_awaited()
+        # 본인 작업이 끝났으면 그 자리에서 버튼과 `/stop` 안내를 걷는다.
+        client.chat_update.assert_awaited_once()
+        kwargs = client.chat_update.await_args.kwargs
+        assert kwargs["blocks"] == []
+        assert "/stop" not in kwargs["text"]
         assert task.status == "completed"
 
     @pytest.mark.asyncio
@@ -597,30 +627,11 @@ class TestSpawnGuard:
 
         task = _make_task()
         tm = _manager_with(task)
-
-        class _EmptyStream:
-            def __aiter__(self):
-                return self
-
-            async def __anext__(self):
-                raise StopAsyncIteration
-
-            async def read(self, n: int = -1) -> bytes:
-                return b""
-
-        proc = MagicMock()
-        proc.stdout = _EmptyStream()
-        proc.stderr = _EmptyStream()
-        proc.wait = AsyncMock(return_value=-15)
-        proc.returncode = -15
-
-        async def _spawn(*args, **kwargs):
-            # spawn await 중에 stop: 이 시점엔 task.process 가 None 이라 terminate 못 함
-            tm.stop_task(task.task_id)
-            return proc
+        proc = _spawned_proc()
 
         with patch(
-            "slack_bot.runner.asyncio.create_subprocess_exec", side_effect=_spawn
+            "slack_bot.runner.asyncio.create_subprocess_exec",
+            side_effect=_stop_during_spawn(tm, task, proc),
         ):
             await run_claude(_project(), "harness", "SB-01", task)
 
@@ -991,6 +1002,7 @@ class TestRunFinishedBeforeProgressPosted:
         assert kwargs["ts"] == "2000.0"
         assert kwargs["blocks"] == []
         assert "실행을 시작합니다" in kwargs["text"]
+        assert "/stop" not in kwargs["text"]
 
     @pytest.mark.asyncio
     async def test_prompt_buttons_cleared_by_handler(self):
@@ -1005,3 +1017,268 @@ class TestRunFinishedBeforeProgressPosted:
         assert kwargs["ts"] == "2000.0"
         assert kwargs["blocks"] == []
         assert "프롬프트 실행을 시작합니다" in kwargs["text"]
+
+
+# ---------------------------------------------------------------------------
+# 대기 중 취소가 슬롯을 기다리지 않음
+# ---------------------------------------------------------------------------
+
+
+class TestTaskSlot:
+    @pytest.mark.asyncio
+    async def test_cancel_reply_without_releasing_slot(self):
+        """슬롯을 점유한 채 stop 하면 슬롯이 풀리지 않아도 취소 답글이 바로 나간다."""
+        task = _make_task()
+        tm = _manager_with(task)
+        app = _app()
+        sem = asyncio.Semaphore(1)
+        await sem.acquire()
+
+        with patch(
+            "slack_bot.handlers.run_claude", new_callable=AsyncMock
+        ) as mock_run:
+            bg = asyncio.create_task(
+                _run_and_report(app, tm, _project(), task, "/harness SB-01", sem)
+            )
+            await asyncio.sleep(0)
+            tm.stop_task(task.task_id)
+            await asyncio.wait_for(bg, timeout=1)
+
+        mock_run.assert_not_awaited()
+        assert "취소되었습니다" in _posted_texts(app)[0]
+        # 슬롯은 여전히 바깥이 쥐고 있다
+        assert sem.locked()
+        sem.release()
+        assert sem._value == 1
+
+    @pytest.mark.asyncio
+    async def test_no_leak_when_release_and_stop_race(self):
+        """슬롯이 풀리는 것과 stop 이 같은 순간에 일어나도 세마포어 카운트가 새지 않는다."""
+        task = _make_task()
+        tm = _manager_with(task)
+        sem = asyncio.Semaphore(1)
+        await sem.acquire()
+        entered: list[tuple[str, bool]] = []
+
+        async def _body():
+            async with handlers._task_slot(sem, task):
+                # 취소된 태스크는 슬롯을 쥔 채 본문(취소 답글 게시)을 돌지 않는다
+                entered.append((task.status, sem.locked()))
+
+        bg = asyncio.create_task(_body())
+        await asyncio.sleep(0)
+        sem.release()  # 대기 중인 acquire 를 깨운다
+        tm.stop_task(task.task_id)  # 같은 틱에 stop
+        await asyncio.wait_for(bg, timeout=1)
+
+        assert entered == [("stopped", False)]
+        assert sem._value == 1
+        assert not sem.locked()
+
+    @pytest.mark.asyncio
+    async def test_slot_released_after_normal_run(self):
+        task = _make_task()
+        sem = asyncio.Semaphore(1)
+
+        async with handlers._task_slot(sem, task):
+            assert sem.locked()
+
+        assert sem._value == 1
+
+    def test_stop_task_sets_stop_event(self):
+        task = _make_task()
+        tm = _manager_with(task)
+
+        tm.stop_task(task.task_id)
+
+        assert task.stop_event.is_set()
+
+
+# ---------------------------------------------------------------------------
+# shell 취소는 프로세스 그룹째 끝낸다
+# ---------------------------------------------------------------------------
+
+
+class TestProcessGroupTermination:
+    def test_group_leader_killed_by_group(self):
+        from slack_bot.task_manager import terminate_process
+
+        proc = MagicMock()
+        proc.pid = 4321
+        with patch("slack_bot.task_manager.os.getpgid", return_value=4321), patch(
+            "slack_bot.task_manager.os.killpg"
+        ) as mock_killpg:
+            terminate_process(proc)
+
+        import signal
+
+        mock_killpg.assert_called_once_with(4321, signal.SIGTERM)
+        proc.terminate.assert_not_called()
+
+    def test_non_leader_uses_terminate(self):
+        """그룹 리더가 아니면 killpg 하지 않는다 (봇 자신의 그룹을 죽이지 않도록)."""
+        from slack_bot.task_manager import terminate_process
+
+        proc = MagicMock()
+        proc.pid = 4321
+        with patch("slack_bot.task_manager.os.getpgid", return_value=1), patch(
+            "slack_bot.task_manager.os.killpg"
+        ) as mock_killpg:
+            terminate_process(proc)
+
+        mock_killpg.assert_not_called()
+        proc.terminate.assert_called_once()
+
+    def test_already_exited_process_ignored(self):
+        from slack_bot.task_manager import terminate_process
+
+        proc = MagicMock()
+        proc.pid = 4321
+        with patch(
+            "slack_bot.task_manager.os.getpgid", side_effect=ProcessLookupError
+        ):
+            terminate_process(proc)  # 예외가 새지 않는다
+
+    def test_stop_task_kills_shell_group(self):
+        task = _make_task(command="shell")
+        tm = _manager_with(task)
+        proc = MagicMock()
+        proc.pid = 4321
+        proc.returncode = None
+        task.process = proc
+
+        with patch("slack_bot.task_manager.os.getpgid", return_value=4321), patch(
+            "slack_bot.task_manager.os.killpg"
+        ) as mock_killpg:
+            tm.stop_task(task.task_id)
+
+        mock_killpg.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_real_shell_group_terminated(self):
+        """실제 sh 아래 자식까지 끝나는지 확인한다."""
+        from slack_bot.task_manager import terminate_process
+
+        proc = await asyncio.create_subprocess_shell(
+            "sleep 30; echo done",
+            stdout=asyncio.subprocess.PIPE,
+            start_new_session=True,
+        )
+        terminate_process(proc)
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
+        assert b"done" not in out
+        assert proc.returncode != 0
+
+    @pytest.mark.asyncio
+    async def test_shell_spawned_in_new_session(self, tmp_path):
+        task = _make_task(command="shell", args="echo hi")
+        tm = _manager_with(task)
+        app = _app()
+        proc = _spawned_proc()
+        proc.returncode = 0
+
+        with patch(
+            "slack_bot.handlers.asyncio.create_subprocess_shell",
+            new_callable=AsyncMock,
+            return_value=proc,
+        ) as mock_shell:
+            await _run_shell_and_report(
+                app, tm, _project(), task, str(tmp_path / "log.txt"),
+                asyncio.Semaphore(1),
+            )
+
+        assert mock_shell.await_args.kwargs["start_new_session"] is True
+
+    @pytest.mark.asyncio
+    async def test_remote_shell_spawned_in_new_session_and_cancel_notes_remote(
+        self, tmp_path
+    ):
+        from slack_bot.config import RemoteConfig
+
+        project = ProjectConfig(
+            name="trader", path="/tmp", remote=RemoteConfig(host="prod")
+        )
+        task = _make_task(command="shell", args="sleep 100")
+        tm = _manager_with(task)
+        app = _app()
+        proc = _spawned_proc()
+
+        with patch(
+            "slack_bot.handlers.asyncio.create_subprocess_exec",
+            side_effect=_stop_during_spawn(tm, task, proc),
+        ) as mock_exec:
+            await _run_shell_and_report(
+                app, tm, project, task, str(tmp_path / "log.txt"),
+                asyncio.Semaphore(1),
+            )
+
+        assert mock_exec.call_args.kwargs["start_new_session"] is True
+        assert "원격 서버의 명령은 계속" in _posted_texts(app)[0]
+
+
+# ---------------------------------------------------------------------------
+# 시작 알림 게시 실패 시 태스크를 닫는다
+# ---------------------------------------------------------------------------
+
+
+class TestProgressPostFailureClosesTask:
+    async def _run(self, projects, text: str):
+        from tests.test_handler_stability import _register_event_handlers
+
+        events, task_manager = _register_event_handlers(projects)
+        err = SlackApiError("ratelimited", {"ok": False, "error": "ratelimited"})
+        say = AsyncMock(side_effect=err)
+        client = MagicMock()
+        client.reactions_add = AsyncMock()
+        client.reactions_remove = AsyncMock()
+        client.conversations_replies = AsyncMock(return_value={"messages": []})
+        event = {
+            "text": text,
+            "ts": "1000.0",
+            "user": "U1",
+            "channel": "C123",
+            "channel_type": "channel",
+        }
+        with patch(
+            "slack_bot.handlers.answer_question", new_callable=AsyncMock
+        ), patch("slack_bot.handlers.run_db_query", new_callable=AsyncMock), patch(
+            "slack_bot.handlers.run_db_query_export", new_callable=AsyncMock
+        ), patch(
+            "slack_bot.handlers.asyncio.create_subprocess_shell", new_callable=AsyncMock
+        ) as mock_shell:
+            with pytest.raises(SlackApiError):
+                await events["app_mention"](event=event, say=say, client=client)
+        return task_manager, mock_shell
+
+    @pytest.mark.asyncio
+    async def test_shell_task_failed_when_progress_post_fails(self):
+        from tests.test_handler_stability import _shell_event, _trader_projects
+
+        tm, mock_shell = await self._run(_trader_projects(), _shell_event()["text"])
+
+        tm.complete_task.assert_called_once_with("001", False)
+        mock_shell.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_db_task_failed_when_progress_post_fails(self):
+        from tests.test_handler_stability import _db_event, _trader_db_projects
+
+        tm, _ = await self._run(_trader_db_projects(), _db_event()["text"])
+
+        tm.complete_task.assert_called_once_with("001", False)
+
+    @pytest.mark.asyncio
+    async def test_db_export_task_failed_when_progress_post_fails(self):
+        from tests.test_handler_stability import _db_event, _trader_db_projects
+
+        tm, _ = await self._run(
+            _trader_db_projects(), _db_event(export=True)["text"]
+        )
+
+        tm.complete_task.assert_called_once_with("001", False)
+
+    @pytest.mark.asyncio
+    async def test_question_task_failed_when_progress_post_fails(self):
+        tm, _ = await self._run(None, "<@U0BOT> 온보딩 절차 알려줘")
+
+        tm.complete_task.assert_called_once_with("001", False)

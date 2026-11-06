@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -114,21 +115,99 @@ def _response_ts(resp) -> str:
     return ts if isinstance(ts, str) else ""
 
 
-async def _post_progress(say, text: str, task_id: str, thread_ts: str):
+# blocks 자체가 거부됐을 때의 Slack 오류 코드. 이때만 버튼 없이 평문으로 다시 보낸다.
+_BLOCKS_ERROR_CODES = frozenset({"invalid_blocks", "invalid_blocks_format"})
+
+
+def _stop_hint(task_id: str) -> str:
+    return f"\n취소: `/stop {task_id}`"
+
+
+def _strip_stop_hint(text: str, task_id: str) -> str:
+    """끝난 태스크의 메시지에 남은 `/stop ID` 안내를 지운다."""
+    return text.replace(_stop_hint(task_id), "")
+
+
+def _slack_error_code(exc: SlackApiError) -> str | None:
+    resp = getattr(exc, "response", None)
+    try:
+        code = resp.get("error") if resp is not None else None
+    except Exception:
+        return None
+    return code if isinstance(code, str) else None
+
+
+async def _post_progress(say, base_text: str, task_id: str, thread_ts: str):
     """[취소] 버튼이 달린 시작 알림을 게시하고 응답을 돌려준다.
 
-    blocks 가 거부되면(invalid_blocks 등) 버튼 없이 평문으로 다시 보낸다.
-    평문에도 `/stop ID` 안내가 들어 있어 취소 수단은 남는다.
+    본문은 base_text 뒤에 `/stop ID` 안내를 붙인 것이다. 완료 시에는 base_text 로 되돌려
+    안내를 걷는다. blocks 가 거부되면(invalid_blocks 등) 버튼 없이 평문으로 다시 보낸다.
+    평문에도 `/stop ID` 안내가 들어 있어 취소 수단은 남는다. 그 밖의 Slack 오류는 그대로 올린다.
     """
+    text = base_text + _stop_hint(task_id)
     try:
         return await say(
             text=text,
             blocks=_build_progress_blocks(text, task_id),
             thread_ts=thread_ts,
         )
-    except SlackApiError:
+    except SlackApiError as exc:
+        if _slack_error_code(exc) not in _BLOCKS_ERROR_CODES:
+            raise
         logger.warning("시작 알림 blocks 게시 실패, 평문으로 재전송", exc_info=True)
         return await say(text=text, thread_ts=thread_ts)
+
+
+@contextlib.asynccontextmanager
+async def _task_slot(semaphore: asyncio.Semaphore, task):
+    """세마포어 슬롯을 얻거나, 그 전에 태스크가 취소되면 슬롯 없이 빠져나온다.
+
+    `async with semaphore:` 로 기다리면 대기 중에 취소해도 슬롯이 빌 때까지 취소 답글이
+    미뤄진다. 슬롯 획득과 stop_event 중 먼저 끝나는 쪽을 기다리고, 획득했을 때만 빠져나올 때
+    release 한다. 본문은 기존처럼 task.status 로 취소 여부를 확인한다.
+    """
+    stop_event = getattr(task, "stop_event", None)
+    acquired = False
+    if task.status == "stopped":
+        pass
+    elif not isinstance(stop_event, asyncio.Event):
+        await semaphore.acquire()
+        acquired = True
+    else:
+        acquire_t = asyncio.ensure_future(semaphore.acquire())
+        stop_t = asyncio.ensure_future(stop_event.wait())
+        try:
+            await asyncio.wait({acquire_t, stop_t}, return_when=asyncio.FIRST_COMPLETED)
+        except BaseException:
+            stop_t.cancel()
+            await _abandon_acquire(acquire_t, semaphore)
+            raise
+        stop_t.cancel()
+        if acquire_t.done() and not acquire_t.cancelled():
+            acquired = True
+        else:
+            # cancel 과 획득이 겹치면 슬롯을 얻은 채로 끝날 수 있어 그 경우 돌려준다.
+            await _abandon_acquire(acquire_t, semaphore)
+        if acquired and task.status == "stopped":
+            semaphore.release()
+            acquired = False
+    try:
+        yield
+    finally:
+        if acquired:
+            semaphore.release()
+
+
+async def _abandon_acquire(acquire_t: asyncio.Future, semaphore: asyncio.Semaphore) -> None:
+    """기다리던 acquire 를 취소한다. 취소 전에 획득이 끝났으면 슬롯을 돌려준다."""
+    if not acquire_t.done():
+        acquire_t.cancel()
+        try:
+            await acquire_t
+        except asyncio.CancelledError:
+            return
+    if not acquire_t.cancelled() and acquire_t.exception() is None:
+        semaphore.release()
 
 
 async def _clear_progress_buttons(client, channel: str, ts: str, text: str) -> None:
@@ -157,9 +236,9 @@ def _task_progress_ts(task) -> str:
 
 
 async def _finish_progress_buttons(app: AsyncApp, task, progress_text: str) -> None:
-    """명령, 프롬프트, shell 완료 시 시작 알림의 버튼만 걷는다.
+    """명령, 프롬프트, shell 완료 시 시작 알림의 버튼과 `/stop ID` 안내를 걷는다.
 
-    취소된 태스크는 취소됨 문구로 바꾼다. /stop 으로 끊으면 버튼 콜백을 거치지 않아
+    progress_text 는 안내를 붙이기 전의 base 문구다. 취소된 태스크는 취소됨 문구로 바꾼다. /stop 으로 끊으면 버튼 콜백을 거치지 않아
     버튼이 남기 때문이다. 콜백이 이미 "취소 요청됨" 으로 바꾼 경우 덮어써도 뜻이 같다.
     """
     if task.status == "stopped":
@@ -213,7 +292,9 @@ async def _handle_task_cancel(*, client, body: dict, task_manager: TaskManager) 
             ":information_source: 봇이 재시작되어 만료된 버튼입니다.",
             thread_ts,
         )
-        await _clear_progress_buttons(client, channel_id, message_ts, message_text)
+        await _clear_progress_buttons(
+            client, channel_id, message_ts, _strip_stop_hint(message_text, task_id)
+        )
         return
 
     task = task_manager.get_task(task_id)
@@ -226,7 +307,9 @@ async def _handle_task_cancel(*, client, body: dict, task_manager: TaskManager) 
             thread_ts,
         )
         if task is None:
-            await _clear_progress_buttons(client, channel_id, message_ts, message_text)
+            await _clear_progress_buttons(
+                client, channel_id, message_ts, _strip_stop_hint(message_text, task_id)
+            )
         return
 
     if task.user != clicker_id:
@@ -246,6 +329,10 @@ async def _handle_task_cancel(*, client, body: dict, task_manager: TaskManager) 
             clicker_id,
             f":information_source: 이미 종료된 작업입니다. (ID: {task_id})",
             thread_ts,
+        )
+        # 본인 작업이니 상태를 알려도 된다. 끝난 작업의 버튼은 여기서 걷는다.
+        await _clear_progress_buttons(
+            client, channel_id, message_ts, _strip_stop_hint(message_text, task_id)
         )
         return
 
@@ -283,6 +370,19 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
     _chat_semaphore = asyncio.Semaphore(MAX_CONCURRENT_CHAT)
     _task_semaphore = asyncio.Semaphore(MAX_CONCURRENT_TASK)
     _background_tasks: set[asyncio.Task] = set()
+
+    async def _post_task_progress(say, base_text: str, task, thread_ts: str) -> None:
+        """백그라운드 태스크를 띄우기 전에 시작 알림을 게시하고 ts 를 보관한다.
+
+        게시가 예외로 끝나면 등록해 둔 태스크가 running 으로 남아 같은 요청이 계속
+        "이미 실행 중" 으로 막히므로, 실패로 닫은 뒤 예외를 다시 올린다.
+        """
+        try:
+            resp = await _post_progress(say, base_text, task.task_id, thread_ts)
+        except Exception:
+            task_manager.complete_task(task.task_id, False)
+            raise
+        task.progress_ts = _response_ts(resp)
 
     # `claude auth login` 진행 중 코드 입력을 대기하는 세션들.
     # key = f"{channel}:{msg_ts}" (msg_ts는 확인 버튼 메시지의 ts).
@@ -658,7 +758,7 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
 
         progress_text = (
             f":rocket: *{intent.project}* `{prompt_display}` 실행을 시작합니다. "
-            f"(태스크 ID: {task.task_id}, 취소: `/stop {task.task_id}`)"
+            f"(태스크 ID: {task.task_id})"
         )
         bg_task = asyncio.create_task(
             _run_and_report(
@@ -733,7 +833,7 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
 
         progress_text = (
             f":rocket: *{intent.project}* 프롬프트 실행을 시작합니다. "
-            f"(태스크 ID: {task.task_id}, 취소: `/stop {task.task_id}`)\n"
+            f"(태스크 ID: {task.task_id})\n"
             f"> {prompt_display}"
         )
         bg_task = asyncio.create_task(
@@ -837,10 +937,9 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
             f"{where_line}"
             f"*   명령어: `{intent.command}`\n"
             f"*   로그: `{log_path}`\n\n"
-            f"나중에 결과 확인하실 때 말씀해주세요. (취소: `/stop {task.task_id}`)"
+            f"나중에 결과 확인하실 때 말씀해주세요."
         )
-        resp = await _post_progress(say, progress_text, task.task_id, thread_ts)
-        task.progress_ts = _response_ts(resp)
+        await _post_task_progress(say, progress_text, task, thread_ts)
 
         bg_task = asyncio.create_task(
             _run_shell_and_report(
@@ -939,14 +1038,13 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
             return False
 
         if intent.export:
-            resp = await _post_progress(
+            await _post_task_progress(
                 say,
                 f":outbox_tray: `{intent.raw_text}` 데이터 추출 중... "
-                f"(ID: {db_task.task_id}, 취소: `/stop {db_task.task_id}`)",
-                db_task.task_id,
+                f"(ID: {db_task.task_id})",
+                db_task,
                 thread_ts,
             )
-            db_task.progress_ts = _response_ts(resp)
             bg_task = asyncio.create_task(
                 _run_db_query_export_and_report(
                     app,
@@ -962,14 +1060,13 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
                 )
             )
         else:
-            resp = await _post_progress(
+            await _post_task_progress(
                 say,
                 f":mag: `{intent.raw_text}` 조회 중... "
-                f"(ID: {db_task.task_id}, 취소: `/stop {db_task.task_id}`)",
-                db_task.task_id,
+                f"(ID: {db_task.task_id})",
+                db_task,
                 thread_ts,
             )
-            db_task.progress_ts = _response_ts(resp)
             bg_task = asyncio.create_task(
                 _run_db_query_and_report(
                     app,
@@ -1044,17 +1141,13 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
             thread_ts=thread_ts,
         )
 
-        # 답변 도착 시 삭제할 수 있도록 시작 메시지의 ts를 보관한다.
-        # say() 결과가 dict-like가 아닐 수도 있어 방어적으로 처리.
-        progress_response = await _post_progress(
+        # 답변 도착 시 삭제할 수 있도록 시작 메시지의 ts를 task.progress_ts 에 보관한다.
+        await _post_task_progress(
             say,
-            f":mag: 질문 처리를 시작합니다. "
-            f"(ID: {chat_task.task_id}, 취소: `/stop {chat_task.task_id}`)",
-            chat_task.task_id,
+            f":mag: 질문 처리를 시작합니다. (ID: {chat_task.task_id})",
+            chat_task,
             thread_ts,
         )
-        progress_ts: str | None = _response_ts(progress_response) or None
-        chat_task.progress_ts = progress_ts or ""
 
         bg_task = asyncio.create_task(
             _run_chat_question_and_report(
@@ -1069,7 +1162,6 @@ def register_handlers(app: AsyncApp, task_manager: TaskManager) -> None:
                 channel=channel,
                 thread_ts=thread_ts,
                 semaphore=_chat_semaphore,
-                progress_ts=progress_ts,
                 event_ts=event_ts,
             )
         )
@@ -1680,27 +1772,21 @@ async def _run_chat_question_and_report(
     channel: str,
     thread_ts: str,
     semaphore: asyncio.Semaphore,
-    progress_ts: str | None = None,
     event_ts: str | None = None,
 ) -> None:
     """answer_question을 백그라운드에서 실행하고 결과를 스레드에 보고한다.
 
-    progress_ts가 주어지면 결과/취소/에러 메시지를 보낸 직후 해당 시작 알림 메시지를
+    task.progress_ts 가 있으면 결과/취소/에러 메시지를 보낸 직후 해당 시작 알림 메시지를
     삭제한다. 시작 알림이 답변 옆에 남아 있으면 채널이 지저분해 보이기 때문이다.
-    삭제는 best-effort — 실패해도 사용자 흐름에는 영향이 없어야 한다.
+    삭제는 best-effort 라 실패해도 사용자 흐름에는 영향이 없어야 한다.
     """
 
     async def _delete_progress() -> None:
-        if not progress_ts:
-            return
-        try:
-            await app.client.chat_delete(channel=channel, ts=progress_ts)
-        except Exception:
-            logger.warning("진행 메시지 삭제 실패 (ts=%s)", progress_ts, exc_info=True)
+        await _delete_progress_message(app.client, channel, _task_progress_ts(task))
 
     try:
         answer = ""
-        async with semaphore:
+        async with _task_slot(semaphore, task):
             # 대기 중에 취소됐으면 CLI 를 띄우지 않고 아래 stopped 분기로 간다.
             if task.status != "stopped":
                 answer = await answer_question(
@@ -1766,16 +1852,17 @@ async def _run_shell_and_report(
     """셸 명령을 직접 실행하고 완료 시 결과를 보고한다."""
 
     async def _post_cancelled() -> None:
-        cancel_kwargs: dict = dict(
-            channel=task.channel,
-            text=f":octagonal_sign: 명령어 실행이 취소되었습니다. (ID: {task.task_id})",
-        )
+        text = f":octagonal_sign: 명령어 실행이 취소되었습니다. (ID: {task.task_id})"
+        if project.remote:
+            # 로컬 ssh 만 끝내므로 원격 쪽 명령은 계속 돌 수 있다.
+            text += "\n원격 서버의 명령은 계속 실행 중일 수 있으니 필요하면 직접 확인해주세요."
+        cancel_kwargs: dict = dict(channel=task.channel, text=text)
         if task.thread_ts:
             cancel_kwargs["thread_ts"] = task.thread_ts
         await app.client.chat_postMessage(**cancel_kwargs)
 
     try:
-        async with semaphore:
+        async with _task_slot(semaphore, task):
             # 대기 중에 취소됐으면 spawn 하지 않는다.
             if task.status == "stopped":
                 await _post_cancelled()
@@ -1803,6 +1890,8 @@ async def _run_shell_and_report(
                         stdout=log_file,
                         stderr=asyncio.subprocess.STDOUT,
                         env=env,
+                        # 취소 시 sh 아래 명령까지 그룹째 끝내도록 새 프로세스 그룹을 만든다.
+                        start_new_session=True,
                     )
                 else:
                     proc = await asyncio.create_subprocess_shell(
@@ -1811,14 +1900,10 @@ async def _run_shell_and_report(
                         stdout=log_file,
                         stderr=asyncio.subprocess.STDOUT,
                         env=env,
+                        # 취소 시 sh 아래 명령까지 그룹째 끝내도록 새 프로세스 그룹을 만든다.
+                        start_new_session=True,
                     )
-                task.process = proc
-                # spawn 을 기다리는 동안 취소됐으면 stop_task 가 process 를 못 봤으므로 여기서 끝낸다.
-                if task.status == "stopped":
-                    try:
-                        proc.terminate()
-                    except ProcessLookupError:
-                        pass
+                task.attach_process(proc)
                 await proc.wait()
 
         if task.status == "stopped":
@@ -1882,7 +1967,7 @@ async def _run_and_report(
 ) -> None:
     try:
         result = None
-        async with semaphore:
+        async with _task_slot(semaphore, task):
             # 대기 중에 취소됐으면 CLI 를 띄우지 않는다.
             if task.status != "stopped":
                 result = await run_claude(project, task.command, task.args, task)
@@ -1967,7 +2052,7 @@ async def _run_prompt_and_report(
     """프로젝트 자유 문장 프롬프트를 `claude -p`로 실행하고 결과를 보고한다."""
     try:
         result = None
-        async with semaphore:
+        async with _task_slot(semaphore, task):
             # 대기 중에 취소됐으면 CLI 를 띄우지 않는다.
             if task.status != "stopped":
                 result = await run_free_prompt(project, task.args, task)
@@ -2052,7 +2137,7 @@ async def _run_db_query_export_and_report(
     """DB 조회 → CSV → Excel → Slack 파일 업로드."""
     try:
         result = None
-        async with semaphore:
+        async with _task_slot(semaphore, task):
             # 대기 중에 취소됐으면 CLI 를 띄우지 않는다.
             if task.status != "stopped":
                 result = await run_db_query_export(question, db_project, task=task)
@@ -2128,7 +2213,7 @@ async def _run_db_query_and_report(
 ) -> None:
     try:
         answer = ""
-        async with semaphore:
+        async with _task_slot(semaphore, task):
             # 대기 중에 취소됐으면 CLI 를 띄우지 않는다.
             if task.status != "stopped":
                 answer = await run_db_query(question, db_project, task=task)

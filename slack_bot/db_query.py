@@ -324,13 +324,7 @@ async def run_db_query(
             env=env,
         )
         if task is not None:
-            task.process = proc
-            # spawn 을 기다리는 동안 취소됐으면 stop_task 가 process 를 못 봤으므로 여기서 끝낸다.
-            if task.status == "stopped":
-                try:
-                    proc.terminate()
-                except ProcessLookupError:
-                    pass
+            task.attach_process(proc)
 
         # stdout을 라인 단위로 스트리밍하며 누적 바이트를 제한한다.
         # 한계 초과 시 프로세스를 kill 해 메모리 폭주/행 차단.
@@ -579,13 +573,7 @@ async def run_db_query_export(
             env=env,
         )
         if task is not None:
-            task.process = proc
-            # spawn 을 기다리는 동안 취소됐으면 stop_task 가 process 를 못 봤으므로 여기서 끝낸다.
-            if task.status == "stopped":
-                try:
-                    proc.terminate()
-                except ProcessLookupError:
-                    pass
+            task.attach_process(proc)
 
         if proc.stdout is None:
             raise RuntimeError("stdout pipe not created")

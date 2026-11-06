@@ -644,7 +644,7 @@ class TestRunChatQuestionAndReport:
 
     @pytest.mark.asyncio
     async def test_deletes_progress_message_after_answer(self):
-        """progress_ts가 주어지면 답변 도착 후 시작 알림 메시지를 삭제한다."""
+        """task.progress_ts가 있으면 답변 도착 후 시작 알림 메시지를 삭제한다."""
         from slack_bot.handlers import _run_chat_question_and_report
 
         sem = asyncio.Semaphore(1)
@@ -655,6 +655,7 @@ class TestRunChatQuestionAndReport:
         task_manager = MagicMock()
         task = MagicMock()
         task.task_id = "045"
+        task.progress_ts = "9999.0001"
         task.status = "running"
 
         with patch(
@@ -674,7 +675,6 @@ class TestRunChatQuestionAndReport:
                 channel="C123",
                 thread_ts="1234.5678",
                 semaphore=sem,
-                progress_ts="9999.0001",
             )
 
         app.client.chat_postMessage.assert_awaited_once()
@@ -695,6 +695,7 @@ class TestRunChatQuestionAndReport:
         task_manager = MagicMock()
         task = MagicMock()
         task.task_id = "046"
+        task.progress_ts = "9999.0002"
         task.status = "stopped"
 
         with patch(
@@ -714,7 +715,6 @@ class TestRunChatQuestionAndReport:
                 channel="C123",
                 thread_ts="1234.5678",
                 semaphore=sem,
-                progress_ts="9999.0002",
             )
 
         app.client.chat_delete.assert_awaited_once_with(
@@ -723,7 +723,7 @@ class TestRunChatQuestionAndReport:
 
     @pytest.mark.asyncio
     async def test_skips_delete_when_progress_ts_none(self):
-        """progress_ts가 None이면 chat_delete를 호출하지 않는다 (하위호환)."""
+        """task.progress_ts가 비어 있으면 chat_delete를 호출하지 않는다."""
         from slack_bot.handlers import _run_chat_question_and_report
 
         sem = asyncio.Semaphore(1)
@@ -734,6 +734,7 @@ class TestRunChatQuestionAndReport:
         task_manager = MagicMock()
         task = MagicMock()
         task.task_id = "047"
+        task.progress_ts = ""
         task.status = "running"
 
         with patch(
@@ -772,6 +773,7 @@ class TestRunChatQuestionAndReport:
         task_manager = MagicMock()
         task = MagicMock()
         task.task_id = "048"
+        task.progress_ts = "9999.0003"
         task.status = "running"
 
         with patch(
@@ -792,7 +794,6 @@ class TestRunChatQuestionAndReport:
                 channel="C123",
                 thread_ts="1234.5678",
                 semaphore=sem,
-                progress_ts="9999.0003",
             )
 
         task_manager.complete_task.assert_called_once_with("048", True)
