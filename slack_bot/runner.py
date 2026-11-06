@@ -5,6 +5,7 @@ import logging
 from dataclasses import dataclass
 
 from slack_bot.config import ProjectConfig
+from slack_bot.orca_session import SessionOutcome, run_in_session
 from slack_bot.remote import build_remote_instructions
 from slack_bot.security import make_safe_env
 from slack_bot.task_manager import TaskInfo
@@ -48,7 +49,7 @@ async def run_claude(
         args = "--auto"
 
     prompt = f"/{command} {args}"
-    return await _run_prompt(project, prompt, task)
+    return await _run_prompt(project, prompt, task, isolated=True)
 
 
 async def run_free_prompt(
@@ -64,9 +65,14 @@ async def run_free_prompt(
 
 
 async def _run_prompt(
-    project: ProjectConfig, prompt: str, task: TaskInfo
+    project: ProjectConfig, prompt: str, task: TaskInfo, isolated: bool = False
 ) -> RunResult:
-    """claude -p <prompt> 를 프로젝트 디렉토리에서 실행하고 stdout을 누적한다."""
+    """claude -p <prompt> 를 실행하고 stdout을 누적한다.
+
+    project.orca 면 orca 세션에서 실행한다. isolated 는 새 워크트리를 쓸지 정한다. 슬래시 명령은
+    끝나면 지워도 되는 작업 공간에서 돌리고, 자유 프롬프트는 로그나 .env 처럼 git 에 없는 파일을
+    봐야 하는 일이 많아 프로젝트 체크아웃에서 돌린다.
+    """
     env = make_safe_env()
     cmd = [
         "claude",
@@ -85,6 +91,18 @@ async def _run_prompt(
     # 슬롯 획득과 spawn 사이에 취소됐으면 CLI 를 띄우지 않는다.
     if task.status == "stopped":
         return RunResult(success=False, output="", return_code=-1)
+
+    fallback_note = ""
+    if project.orca:
+        outcome = await run_in_session(
+            project, cmd, task, isolated, SUBPROCESS_TIMEOUT
+        )
+        if outcome is not None:
+            return _session_result(task, outcome)
+        if task.status == "stopped":
+            return RunResult(success=False, output="", return_code=-1)
+        logger.warning("orca 세션을 만들지 못해 직접 실행합니다: %s", project.name)
+        fallback_note = "\n\n:warning: orca 세션을 만들지 못해 세션 없이 직접 실행했습니다."
 
     proc = await asyncio.create_subprocess_exec(
         *cmd,
@@ -146,6 +164,24 @@ async def _run_prompt(
 
     return RunResult(
         success=proc.returncode == 0,
-        output=output,
+        output=output + fallback_note,
         return_code=proc.returncode or 0,
+    )
+
+
+def _session_result(task: TaskInfo, outcome: SessionOutcome) -> RunResult:
+    output = task.output_text.strip()
+    if len(output) > MAX_OUTPUT_LENGTH:
+        output = output[:MAX_OUTPUT_LENGTH] + "\n\n... (truncated)"
+    if outcome.timed_out:
+        output += (
+            f"\n\n:warning: 실행 시간이 {SUBPROCESS_TIMEOUT}초를 초과하여 "
+            "강제 종료되었습니다."
+        )
+    if outcome.cleanup_note:
+        output += f"\n\n:warning: {outcome.cleanup_note}"
+    return RunResult(
+        success=outcome.return_code == 0 and not outcome.timed_out,
+        output=output,
+        return_code=outcome.return_code,
     )
